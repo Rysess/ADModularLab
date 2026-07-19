@@ -1,0 +1,150 @@
+---
+- name: Wait for cloud-init
+  wait_for:
+    path: /var/lib/cloud/instance/boot-finished
+    timeout: 600
+
+- name: Ensure resolved.conf.d exists
+  file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Reliable resolver for package installs
+  copy:
+    dest: /etc/systemd/resolved.conf.d/aws.conf
+    content: "[Resolve]\nDNS=10.0.0.2 1.1.1.1\n"
+  notify: restart resolved
+
+- meta: flush_handlers
+
+- name: Install OpenVPN + easy-rsa + iptables persistence
+  apt:
+    name: [openvpn, easy-rsa, iptables, iptables-persistent, openssl]
+    state: present
+    update_cache: yes
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+- name: Enable IPv4 forwarding
+  copy:
+    dest: /etc/sysctl.d/99-openvpn.conf
+    content: "net.ipv4.ip_forward=1\n"
+  register: ipfwd
+
+- name: Apply sysctl
+  command: sysctl -p /etc/sysctl.d/99-openvpn.conf
+  when: ipfwd.changed
+
+- name: Create easy-rsa CA dir
+  command: make-cadir /etc/openvpn/easy-rsa
+  args:
+    creates: /etc/openvpn/easy-rsa/easyrsa
+
+- name: Build PKI (init / ca / server / client)
+  command: "{{ item.cmd }}"
+  args:
+    chdir: /etc/openvpn/easy-rsa
+    creates: "/etc/openvpn/easy-rsa/{{ item.creates }}"
+  environment:
+    EASYRSA_BATCH: "1"
+    EASYRSA_ALGO: ec
+    EASYRSA_CURVE: prime256v1
+    EASYRSA_REQ_CN: lab-ovpn-ca
+  loop:
+    - { cmd: "./easyrsa init-pki",                          creates: "pki" }
+    - { cmd: "./easyrsa build-ca nopass",                   creates: "pki/ca.crt" }
+    - { cmd: "./easyrsa build-server-full server nopass",   creates: "pki/issued/server.crt" }
+    - { cmd: "./easyrsa build-client-full client1 nopass",  creates: "pki/issued/client1.crt" }
+
+- name: Server dir
+  file:
+    path: /etc/openvpn/server
+    state: directory
+    mode: "0700"
+
+- name: Generate tls-crypt key
+  command: openvpn --genkey secret /etc/openvpn/server/tls-crypt.key
+  args:
+    creates: /etc/openvpn/server/tls-crypt.key
+
+- name: Stage server key material
+  copy:
+    remote_src: yes
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  loop:
+    - { src: /etc/openvpn/easy-rsa/pki/ca.crt,             dest: /etc/openvpn/server/ca.crt }
+    - { src: /etc/openvpn/easy-rsa/pki/issued/server.crt,  dest: /etc/openvpn/server/server.crt }
+    - { src: /etc/openvpn/easy-rsa/pki/private/server.key, dest: /etc/openvpn/server/server.key }
+
+- name: Write server.conf (split-tunnel; push lab route + DC DNS)
+  copy:
+    dest: /etc/openvpn/server/server.conf
+    content: |
+      port 1194
+      proto udp
+      dev tun
+      ca ca.crt
+      cert server.crt
+      key server.key
+      dh none
+      topology subnet
+      server 10.8.0.0 255.255.255.0
+      push "route 10.0.0.0 255.255.0.0"
+      push "dhcp-option DNS {{ dc_private_ip }}"
+      push "dhcp-option DOMAIN {{ domain_name }}"
+      keepalive 10 120
+      tls-crypt tls-crypt.key
+      cipher AES-256-GCM
+      data-ciphers AES-256-GCM
+      user nobody
+      group nogroup
+      persist-key
+      persist-tun
+      verb 3
+      explicit-exit-notify 1
+  notify: restart openvpn
+
+- name: Configure NAT + forwarding for the VPN subnet
+  shell: |
+    set -e
+    EXT_IF=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
+    iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$EXT_IF" -j MASQUERADE 2>/dev/null \
+      || iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$EXT_IF" -j MASQUERADE
+    iptables -C FORWARD -s 10.8.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.0.0/24 -j ACCEPT
+    iptables -C FORWARD -d 10.8.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.0.0/24 -j ACCEPT
+    netfilter-persistent save
+  changed_when: false
+
+- name: Enable + start OpenVPN
+  systemd:
+    name: openvpn-server@server
+    enabled: yes
+    state: started
+
+- name: Assemble inline client1.ovpn (remote = this box's public IP)
+  shell: |
+    set -e
+    PKI=/etc/openvpn/easy-rsa/pki
+    {
+      echo "client"; echo "dev tun"; echo "proto udp"
+      echo "remote {{ ansible_host }} 1194"
+      echo "resolv-retry infinite"; echo "nobind"
+      echo "persist-key"; echo "persist-tun"
+      echo "remote-cert-tls server"; echo "cipher AES-256-GCM"; echo "verb 3"
+      echo "<ca>";        cat "$PKI/ca.crt";                          echo "</ca>"
+      echo "<cert>";      openssl x509 -in "$PKI/issued/client1.crt"; echo "</cert>"
+      echo "<key>";       cat "$PKI/private/client1.key";             echo "</key>"
+      echo "<tls-crypt>"; cat /etc/openvpn/server/tls-crypt.key;      echo "</tls-crypt>"
+    } > /home/ubuntu/client1.ovpn
+    chown ubuntu:ubuntu /home/ubuntu/client1.ovpn
+    chmod 600 /home/ubuntu/client1.ovpn
+  args:
+    creates: /home/ubuntu/client1.ovpn
+
+- name: Fetch client1.ovpn to the operator (lands in ansible/client1.ovpn)
+  fetch:
+    src: /home/ubuntu/client1.ovpn
+    dest: "{{ playbook_dir }}/client1.ovpn"
+    flat: yes

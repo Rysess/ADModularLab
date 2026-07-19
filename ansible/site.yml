@@ -1,0 +1,41 @@
+---
+- name: Promote domain controllers
+  hosts: role_dc
+  gather_facts: no
+  tags: [base, dc]
+  roles:
+    - dc
+
+- name: Join domain members
+  hosts: role_member
+  gather_facts: no
+  tags: [base, member]
+  roles:
+    - domain_member
+
+- name: Apply modules (Linux)
+  hosts: linux
+  gather_facts: yes
+  become: yes
+  tags: [modules]
+  tasks:
+    - include_role:
+        name: "{{ mod }}"
+      loop: "{{ modules | default([]) }}"
+      loop_control:
+        loop_var: mod
+        label: "{{ mod }}"
+      when: modules | default([]) | length > 0
+
+- name: Apply modules (Windows)
+  hosts: windows
+  gather_facts: yes
+  tags: [modules]
+  tasks:
+    - include_role:
+        name: "{{ mod }}"
+      loop: "{{ modules | default([]) }}"
+      loop_control:
+        loop_var: mod
+        label: "{{ mod }}"
+      when: modules | default([]) | length > 0

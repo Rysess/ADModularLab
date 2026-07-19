@@ -1,0 +1,209 @@
+---
+- name: Guard - edr_server is Linux only
+  assert:
+    that: ansible_system == 'Linux'
+    fail_msg: "edr_server runs on Linux only (Elastic stack via Docker). Check lab.yml."
+    quiet: yes
+
+- name: Wait for cloud-init
+  wait_for:
+    path: /var/lib/cloud/instance/boot-finished
+    timeout: 600
+
+- name: Install Docker prerequisites
+  apt:
+    name: [apt-transport-https, ca-certificates, curl, gnupg, lsb-release]
+    state: present
+    update_cache: yes
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker repo
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Install Docker + Compose + jq
+  apt:
+    name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin, jq]
+    state: present
+    update_cache: yes
+
+- name: Start Docker
+  service: { name: docker, state: started, enabled: yes }
+
+- name: Add ubuntu to docker group
+  user: { name: ubuntu, groups: docker, append: yes }
+
+- name: Clone elastic-container
+  git:
+    repo: https://github.com/peasead/elastic-container.git
+    dest: /opt/elastic-container
+    version: main
+
+- name: Create .env
+  shell: "cd /opt/elastic-container && [ -f .env ] || cp .env.spec .env"
+
+- name: Set password in .env
+  replace:
+    path: /opt/elastic-container/.env
+    regexp: "changeme"
+    replace: "{{ admin_password }}"
+
+- name: Start Elastic Stack
+  shell: "cd /opt/elastic-container && sudo ./elastic-container.sh start"
+
+- name: Wait for Elasticsearch
+  uri:
+    url: https://localhost:9200
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    status_code: 200
+  register: es
+  until: es.status == 200
+  retries: 30
+  delay: 20
+
+- name: Get ES version
+  uri:
+    url: https://localhost:9200
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    return_content: yes
+  register: es_ver
+
+- set_fact:
+    elastic_version: "{{ es_ver.json.version.number }}"
+
+- name: Install nginx
+  apt: { name: nginx, state: present, update_cache: yes }
+
+- name: Agent download dir
+  file:
+    path: /var/www/html/elastic-agent
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0755"
+
+- name: Publish Windows Elastic Agent
+  get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-windows-x86_64.zip"
+    dest: /var/www/html/elastic-agent/elastic-agent-win.zip
+    mode: "0644"
+
+- name: Ensure nginx running
+  service: { name: nginx, state: started, enabled: yes }
+
+- name: Wait for Kibana
+  uri:
+    url: https://localhost:5601/api/status
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    status_code: 200
+  register: kibana
+  until: kibana.status == 200
+  retries: 30
+  delay: 20
+
+- name: Activate trial license
+  uri:
+    url: https://localhost:9200/_license/start_trial?acknowledge=true
+    method: POST
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    status_code: [200, 201]
+  ignore_errors: yes
+
+- name: Enable Windows / AD detection rules
+  uri:
+    url: https://localhost:5601/api/detection_engine/rules/_bulk_action
+    method: POST
+    user: elastic
+    password: "{{ admin_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+    timeout: 120
+    headers:
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query: 'alert.attributes.tags:("OS: Windows" OR "Data Source: Active Directory")'
+      action: enable
+    status_code: [200, 201]
+  ignore_errors: yes
+
+- name: Get Fleet enrollment token
+  uri:
+    url: https://localhost:5601/api/fleet/enrollment_api_keys
+    method: GET
+    force_basic_auth: yes
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    headers:
+      kbn-xsrf: "true"
+    return_content: yes
+  register: fleet_keys
+
+- name: Extract default Fleet token
+  set_fact:
+    fleet_token: >-
+      {{ fleet_keys.json.list
+         | selectattr('name', 'search', 'Default')
+         | map(attribute='api_key')
+         | first }}
+
+- name: Publish Fleet token to all hosts
+  set_fact:
+    global_fleet_token: "{{ fleet_token }}"
+  delegate_to: localhost
+  delegate_facts: true
+  run_once: true
+
+- name: Create Elasticsearch monitor role
+  uri:
+    url: https://localhost:9200/_security/role/version_reader
+    method: POST
+    user: elastic
+    force_basic_auth: yes
+    password: "{{ admin_password }}"
+    validate_certs: no
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      cluster: ["monitor"]
+      indices: []
+    status_code: [200, 201]
+
+- name: Create monitor user
+  uri:
+    url: https://localhost:9200/_security/user/monitor
+    method: POST
+    force_basic_auth: yes
+    user: elastic
+    password: "{{ admin_password }}"
+    validate_certs: no
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      password: "{{ monitor_password }}"
+      roles: ["version_reader"]
+      full_name: "Agent Version Checker"
+      email: "admin@example.com"
+    status_code: [200, 201]
+
+- name: Clean up temp artifacts
+  file:
+    path: /tmp/elastic-agent-win.zip
+    state: absent

@@ -1,0 +1,40 @@
+---
+- name: Wait for WinRM
+  wait_for_connection:
+    timeout: 600
+
+- name: Set computer name (before domain join)
+  ansible.windows.win_hostname:
+    name: "{{ inventory_hostname }}"
+  register: rename
+
+- name: Reboot to apply computer name
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: rename.reboot_required
+
+- name: Wait for the domain to resolve
+  ansible.windows.win_shell: |
+    $n=0
+    while (!(Resolve-DnsName {{ domain_name }} -ErrorAction SilentlyContinue) -and ($n -lt 30)) {
+      Start-Sleep -Seconds 30; $n++
+    }
+    if ($n -ge 30) { throw "Domain not available" }
+    "ok"
+  register: dns_wait
+  retries: 3
+  delay: 60
+  until: dns_wait is succeeded
+
+- name: Join domain
+  microsoft.ad.membership:
+    dns_domain_name: "{{ domain_name }}"
+    domain_admin_user: "{{ domain_admin_user }}@{{ domain_name }}"
+    domain_admin_password: "{{ admin_password }}"
+    state: domain
+  register: join
+
+- name: Reboot after join
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: join.reboot_required

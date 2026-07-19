@@ -1,0 +1,44 @@
+---
+- name: Wait for WinRM
+  wait_for_connection:
+    timeout: 600
+
+- name: Ensure Chocolatey is installed
+  ansible.windows.win_shell: |
+    if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+      Set-ExecutionPolicy Bypass -Scope Process -Force
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    }
+  args:
+    creates: C:\ProgramData\chocolatey\bin\choco.exe
+
+- name: Install SQL Server Express + client tools
+  ansible.windows.win_shell: |
+    choco install sql-server-express -y --no-progress
+    choco install sqlserver-cmdlineutils -y --no-progress
+  args:
+    creates: 'C:\Program Files\Microsoft SQL Server\MSSQL15.SQLEXPRESS'
+  register: sql_install
+  failed_when: sql_install.rc not in [0, 3010]
+
+- name: Open SQL port (VPC-internal)
+  ansible.windows.win_firewall_rule:
+    name: SQL-1433
+    localport: 1433
+    protocol: tcp
+    direction: in
+    action: allow
+    enabled: yes
+
+- name: Seed a demo database + login
+  ansible.windows.win_shell: |
+    $sql = @"
+    IF DB_ID('LabApp') IS NULL CREATE DATABASE LabApp;
+    IF SUSER_ID('svc_labapp') IS NULL
+      CREATE LOGIN svc_labapp WITH PASSWORD = '{{ sql_sa_password | default(admin_password) }}';
+    "@
+    sqlcmd -S "localhost\SQLEXPRESS" -Q $sql
+  register: seed
+  changed_when: "'CREATE' in seed.stdout | default('')"
+  ignore_errors: yes

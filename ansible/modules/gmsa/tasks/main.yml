@@ -1,0 +1,53 @@
+---
+- name: Wait for WinRM
+  wait_for_connection:
+    timeout: 600
+
+- name: Ensure AD PowerShell tooling
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+
+- name: Create {{ gmsa_count }} KDS root keys and {{ gmsa_count }} gMSA accounts
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory -ErrorAction Stop
+    $count      = {{ gmsa_count }}
+    $prefix     = "{{ gmsa_name_prefix }}"
+    $principals = "{{ gmsa_principals }}"
+    $domain     = "{{ domain_name }}"
+    $changed    = $false
+
+    # 1) Ensure $count KDS root keys exist (backdated so they are usable now)
+    $have = @(Get-KdsRootKey).Count
+    for ($i = $have; $i -lt $count; $i++) {
+        Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
+        $changed = $true
+    }
+    $keys = @(Get-KdsRootKey | Sort-Object EffectiveTime | Select-Object -Last $count)
+
+    # 2) Ensure $count gMSA accounts, each paired (nominally) with one root key
+    for ($i = 1; $i -le $count; $i++) {
+        $name  = "$prefix$i"
+        $keyId = $keys[$i-1].KeyId.Guid
+        if (-not (Get-ADServiceAccount -Filter "Name -eq '$name'" -ErrorAction SilentlyContinue)) {
+            New-ADServiceAccount -Name $name `
+                -DNSHostName "$name.$domain" `
+                -PrincipalsAllowedToRetrieveManagedPassword $principals `
+                -KerberosEncryptionType AES128,AES256 `
+                -Description "Lab gMSA paired with KDS root key $keyId" `
+                -Enabled $true
+            $changed = $true
+        }
+    }
+
+    "KDS root keys total: " + @(Get-KdsRootKey).Count
+    Get-ADServiceAccount -Filter * |
+        Select-Object Name, @{n='RootKey';e={($_.Description -split 'root key ')[-1]}} |
+        Format-Table -AutoSize | Out-String
+    if ($changed) { "CHANGED" } else { "NOCHANGE" }
+  register: gmsa_out
+  changed_when: "'CHANGED' in gmsa_out.stdout"
+
+- name: Show gMSA / KDS summary
+  debug:
+    var: gmsa_out.stdout_lines

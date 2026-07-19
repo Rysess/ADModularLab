@@ -1,0 +1,45 @@
+lab:
+  name: adshares-lab
+  region: eu-west-3
+  domain: lab.local
+  domain_admin: john.john
+
+defaults:
+  windows_instance_type: t3.large
+  linux_instance_type: t3.large
+  windows_disk_gb: 50
+  linux_disk_gb: 50
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    instance_type: t3.large
+    private_ip: 10.0.1.10
+    modules:
+      - gmsa
+
+  - name: srv-win01
+    os: windows
+    role: member
+    instance_type: t3.medium
+    modules:
+      - shares
+
+  - name: srv-win02
+    os: windows
+    role: member
+    instance_type: t3.medium
+    modules:
+      - shares
+
+  - name: vpn01
+    os: linux
+    role: standalone
+    instance_type: t3.nano
+    disk_gb: 8
+    source_dest_check: false
+    expose_ports:
+      - { port: 1194, proto: udp }
+    modules:
+      - vpn

@@ -1,0 +1,20 @@
+<powershell>
+$adminPassword = "${admin_password}"
+net user Administrator "$adminPassword"
+
+Enable-PSRemoting -Force
+Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
+Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
+New-NetFirewallRule -Name "WinRM-HTTP" -DisplayName "WinRM HTTP" -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 5985
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ansibleUrl = "https://raw.githubusercontent.com/ansible/ansible/devel/examples/scripts/ConfigureRemotingForAnsible.ps1"
+$scriptPath = "$env:TEMP\ConfigureRemotingForAnsible.ps1"
+try {
+    Invoke-WebRequest -Uri $ansibleUrl -OutFile $scriptPath -UseBasicParsing
+    & powershell.exe -ExecutionPolicy Bypass -File $scriptPath
+} catch { Write-Host "Failed to download Ansible remoting script" }
+
+Set-Service -Name WinRM -StartupType Automatic
+Start-Service -Name WinRM
+</powershell>

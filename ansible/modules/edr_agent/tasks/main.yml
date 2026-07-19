@@ -1,0 +1,41 @@
+---
+- name: Wait for WinRM
+  wait_for_connection:
+    timeout: 600
+
+- name: Wait for the agent artifact to be served by edr_server
+  ansible.windows.win_uri:
+    url: "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip"
+    method: HEAD
+  register: zip_check
+  until: zip_check is succeeded
+  retries: 90
+  delay: 20
+
+- name: Download + unzip agent
+  ansible.windows.win_shell: |
+    New-Item -Path "C:\temp" -ItemType Directory -Force | Out-Null
+    Invoke-WebRequest -Uri "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip" `
+      -UseBasicParsing -OutFile "C:\temp\elastic-agent-win.zip"
+    Expand-Archive -Path "C:\temp\elastic-agent-win.zip" -DestinationPath "C:\temp" -Force
+
+- name: Install + enrol agent (fetches Fleet token from Kibana)
+  ansible.windows.win_shell: |
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $pair = "elastic:{{ admin_password }}"
+    $enc  = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+    $headers = @{ Authorization = "Basic $enc"; "kbn-xsrf" = "true" }
+    add-type @"
+      using System.Net; using System.Security.Cryptography.X509Certificates;
+      public class TrustAll : ICertificatePolicy {
+        public bool CheckValidationResult(ServicePoint s, X509Certificate c, WebRequest r, int p) { return true; } }
+    "@
+    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
+    $url = "https://{{ elastic_private_ip }}:5601/api/fleet/enrollment_api_keys"
+    $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+    $token = ($resp.list | Where-Object { $_.name -like "*Default*" } | Select-Object -First 1).api_key
+    if (-not $token) { throw "No Fleet token" }
+    cd C:\temp\elastic-agent-*
+    .\elastic-agent.exe install --url="https://{{ elastic_private_ip }}:8220" --enrollment-token="$token" --insecure -f
+  args:
+    creates: C:\Program Files\Elastic\Agent\elastic-agent.exe

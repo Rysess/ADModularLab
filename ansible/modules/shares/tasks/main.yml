@@ -1,0 +1,100 @@
+---
+- name: Wait for WinRM
+  wait_for_connection:
+    timeout: 600
+
+- name: Resolve the DC inventory host
+  set_fact:
+    shares_dc_host: "{{ groups['role_dc'] | first }}"
+
+- name: Create AD security groups (on the DC)
+  microsoft.ad.group:
+    name: "{{ item }}"
+    scope: global
+    category: security
+    state: present
+  loop: "{{ shares_ad_groups }}"
+  delegate_to: "{{ shares_dc_host }}"
+  ignore_errors: yes
+
+- name: Populate AD group memberships (users + nested Auditors)
+  microsoft.ad.group:
+    name: "{{ item.group }}"
+    scope: global
+    members:
+      add: "{{ item.members }}"
+    state: present
+  loop: "{{ shares_ad_group_members }}"
+  loop_control:
+    label: "{{ item.group }}"
+  delegate_to: "{{ shares_dc_host }}"
+  ignore_errors: yes
+
+- name: Create share root dirs
+  ansible.windows.win_file:
+    path: "{{ shares_root }}\\{{ item.name }}"
+    state: directory
+  loop: "{{ shares_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create extra dirs (prune-negatives + depth test)
+  ansible.windows.win_file:
+    path: "{{ shares_root }}\\{{ item }}"
+    state: directory
+  loop: "{{ shares_extra_dirs }}"
+
+- name: Write synthetic artifacts
+  ansible.windows.win_copy:
+    dest: "{{ shares_root }}\\{{ item.dest }}"
+    content: "{{ item.content }}"
+  loop: "{{ shares_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Ensure Administrators + SYSTEM keep Full Control (pre-lockdown)
+  ansible.windows.win_acl:
+    path: "{{ shares_root }}\\{{ item.0.name }}"
+    user: "{{ item.1 }}"
+    rights: "FullControl"
+    type: allow
+    state: present
+    inherit: "ContainerInherit, ObjectInherit"
+    propagation: "None"
+  loop: "{{ shares_definitions | product(['BUILTIN\\Administrators', 'NT AUTHORITY\\SYSTEM']) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} <- {{ item.1 }}"
+
+- name: Disable NTFS inheritance and drop inherited ACEs
+  ansible.windows.win_acl_inheritance:
+    path: "{{ shares_root }}\\{{ item.name }}"
+    state: absent
+    reorganize: no
+  loop: "{{ shares_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Grant ONLY the mapped AD group ReadAndExecute (NTFS)
+  ansible.windows.win_acl:
+    path: "{{ shares_root }}\\{{ item.name }}"
+    user: "{{ shares_netbios }}\\{{ item.grp }}"
+    rights: "ReadAndExecute"
+    type: allow
+    state: present
+    inherit: "ContainerInherit, ObjectInherit"
+    propagation: "None"
+  loop: "{{ shares_definitions }}"
+  loop_control:
+    label: "{{ item.name }} <- {{ item.grp }}"
+
+- name: Publish shares (read = mapped group only)
+  ansible.windows.win_share:
+    name: "{{ item.name }}"
+    path: "{{ shares_root }}\\{{ item.name }}"
+    state: present
+    full: "BUILTIN\\Administrators"
+    read: "{{ shares_netbios }}\\{{ item.grp }}"
+    list: yes
+  loop: "{{ shares_definitions }}"
+  loop_control:
+    label: "{{ item.name }} <- {{ item.grp }}"

@@ -1,0 +1,68 @@
+---
+shares_root: 'C:\Shares'
+shares_netbios: "{{ domain_name.split('.')[0] | upper }}"
+
+shares_ad_groups:
+  - IT-Admins
+  - Finance-Team
+  - Backup-Admins
+  - DevOps
+  - Server-Admins
+  - Management
+  - HR
+  - Helpdesk
+  - Security-Team
+  - Auditors
+
+shares_ad_group_members:
+  - { group: 'Finance-Team',  members: ['LabUser1',  'Auditors'] }
+  - { group: 'IT-Admins',     members: ['LabUser2',  'Auditors'] }
+  - { group: 'Backup-Admins', members: ['LabUser3',  'Auditors'] }
+  - { group: 'DevOps',        members: ['LabUser4',  'Auditors'] }
+  - { group: 'Server-Admins', members: ['LabUser9',  'Auditors'] }
+  - { group: 'Management',    members: ['LabUser5'] }
+  - { group: 'HR',            members: ['LabUser6'] }
+  - { group: 'Helpdesk',      members: ['LabUser7'] }
+  - { group: 'Security-Team', members: ['LabUser8'] }
+  - { group: 'Auditors',      members: ['LabUser10'] }
+
+shares_definitions:
+  - { name: 'Finance', grp: 'Finance-Team' }
+  - { name: 'IT',      grp: 'IT-Admins' }
+  - { name: 'Backups', grp: 'Backup-Admins' }
+  - { name: 'DevOps',  grp: 'DevOps' }
+  - { name: 'Public',  grp: 'Domain Users' }
+
+shares_extra_dirs:
+  - 'Public\a\b\c\d'
+  - 'Public\node_modules'
+  - 'Public\.git\objects\ab'
+
+shares_files:
+  - { dest: 'Finance\Passwords_2025.xlsx', content: "fake xlsx - keep-filename-contains-yellow\n" }
+  - { dest: 'Finance\Handover_Notes.docx', content: "fake docx - handover\n" }
+  - { dest: 'Finance\DA_credentials.txt',  content: "password = Sup3rS3cret!\n" }
+  - { dest: 'Finance\payroll.bak',         content: "backup blob - red ext\n" }
+  - { dest: 'Finance\reporting.sql',       content: "-- Server=tcp:sqlprod,1433;Initial Catalog=Payroll;User ID=sa;Password=Autumn2025!;\n" }
+  - { dest: 'IT\id_rsa',      content: "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKELABKEYDATA000\n-----END OPENSSH PRIVATE KEY-----\n" }
+  - { dest: 'IT\web.config',  content: "<configuration><connectionStrings><add connectionString=\"Server=db;Password=W1nter2025!;\"/></connectionStrings></configuration>\n" }
+  - { dest: 'IT\.env',        content: "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" }
+  - { dest: 'IT\.npmrc',      content: "//registry.npmjs.org/:_authToken=npm_0123456789abcdefghijABCDEFGHIJ012345\n" }
+  - { dest: 'IT\gpp.xml',     content: "cpassword=\"RGVmaW5pdGVseUZha2VMYWJPbmx5MDAw\"\n" }
+  - { dest: 'IT\backup.kdbx', content: "fake keepass - black ext\n" }
+  - { dest: 'IT\known_hosts', content: "ssh-ed25519 AAAA labhost\n" }
+  - { dest: 'Backups\ntds.dit',                 content: "fake esent - black name\n" }
+  - { dest: 'Backups\SYSTEM',                   content: "fake hive - black name\n" }
+  - { dest: 'Backups\.git-credentials',         content: "https://u:ghp_0123456789abcdefghijABCDEFGHIJ012345@github.com\n" }
+  - { dest: 'Backups\vm-disk.vmdk',             content: "fake vmdk - red ext\n" }
+  - { dest: 'Backups\terraform.tfstate',        content: "{ \"admin_password\": \"L4bAdm1nP@ss\" }\n" }
+  - { dest: 'Backups\terraform.tfstate.backup', content: "{ \"note\": \"ends-red\" }\n" }
+  - { dest: 'DevOps\kubeconfig',    content: "apiVersion: v1\nusers: [{user: {token: red-name}}]\n" }
+  - { dest: 'DevOps\.pypirc',       content: "[pypi]\npassword = pypi-AgEIcHlwaS01234567890123456789012345678901234567890\n" }
+  - { dest: 'DevOps\docker-compose.yml', content: "services:\n  app:\n    environment:\n      - SLACK=xoxb-01234567890123456789\n      - GITLAB=glpat-0123456789abcdefghij\n" }
+  - { dest: 'DevOps\deploy.ps1',    content: "$gh='ghp_0123456789abcdefghijABCDEFGHIJ012345'\n$az='DefaultEndpointsProtocol=https;AccountKey=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=='\n" }
+  - { dest: 'DevOps\main.tf',       content: "provider \"aws\" { access_key = \"AKIAIOSFODNN7EXAMPLE\" }\n" }
+  - { dest: 'Public\readme.txt',                       content: "nothing here\n" }
+  - { dest: 'Public\node_modules\leaked.env',          content: "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n" }
+  - { dest: 'Public\.git\objects\ab\deadbeef',         content: "-----BEGIN RSA PRIVATE KEY-----\nFAKE\n-----END RSA PRIVATE KEY-----\n" }
+  - { dest: 'Public\a\b\c\d\deep_secret.txt',          content: "token=ghp_0123456789abcdefghijABCDEFGHIJ012345\n" }

@@ -1,0 +1,9 @@
+---
+- name: restart resolved
+  service:
+    name: systemd-resolved
+    state: restarted
+- name: restart openvpn
+  systemd:
+    name: openvpn-server@server
+    state: restarted
