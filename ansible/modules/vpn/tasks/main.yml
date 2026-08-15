@@ -1,150 +1,135 @@
 ---
 - name: Wait for cloud-init
-  wait_for:
+  ansible.builtin.wait_for:
     path: /var/lib/cloud/instance/boot-finished
     timeout: 600
 
-- name: Ensure resolved.conf.d exists
-  file:
-    path: /etc/systemd/resolved.conf.d
-    state: directory
-    mode: "0755"
-
-- name: Reliable resolver for package installs
-  copy:
-    dest: /etc/systemd/resolved.conf.d/aws.conf
-    content: "[Resolve]\nDNS=10.0.0.2 1.1.1.1\n"
-  notify: restart resolved
-
-- meta: flush_handlers
-
-- name: Install OpenVPN + easy-rsa + iptables persistence
-  apt:
+- name: Install OpenVPN, easy-rsa and iptables persistence
+  ansible.builtin.apt:
     name: [openvpn, easy-rsa, iptables, iptables-persistent, openssl]
     state: present
-    update_cache: yes
+    update_cache: true
   environment:
     DEBIAN_FRONTEND: noninteractive
 
 - name: Enable IPv4 forwarding
-  copy:
-    dest: /etc/sysctl.d/99-openvpn.conf
-    content: "net.ipv4.ip_forward=1\n"
-  register: ipfwd
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_file: /etc/sysctl.d/99-openvpn.conf
+    sysctl_set: true
+    reload: true
 
-- name: Apply sysctl
-  command: sysctl -p /etc/sysctl.d/99-openvpn.conf
-  when: ipfwd.changed
+- name: Create the easy-rsa CA directory
+  ansible.builtin.command:
+    cmd: make-cadir {{ vpn_easyrsa_dir }}
+    creates: "{{ vpn_easyrsa_dir }}/easyrsa"
 
-- name: Create easy-rsa CA dir
-  command: make-cadir /etc/openvpn/easy-rsa
-  args:
-    creates: /etc/openvpn/easy-rsa/easyrsa
-
-- name: Build PKI (init / ca / server / client)
-  command: "{{ item.cmd }}"
-  args:
-    chdir: /etc/openvpn/easy-rsa
-    creates: "/etc/openvpn/easy-rsa/{{ item.creates }}"
+- name: Build the PKI (init / ca / server / client)
+  ansible.builtin.command:
+    cmd: "{{ item.cmd }}"
+    chdir: "{{ vpn_easyrsa_dir }}"
+    creates: "{{ vpn_easyrsa_dir }}/{{ item.creates }}"
   environment:
     EASYRSA_BATCH: "1"
-    EASYRSA_ALGO: ec
-    EASYRSA_CURVE: prime256v1
-    EASYRSA_REQ_CN: lab-ovpn-ca
+    EASYRSA_ALGO: "{{ vpn_easyrsa_algo }}"
+    EASYRSA_CURVE: "{{ vpn_easyrsa_curve }}"
+    EASYRSA_REQ_CN: "{{ vpn_ca_cn }}"
   loop:
-    - { cmd: "./easyrsa init-pki",                          creates: "pki" }
-    - { cmd: "./easyrsa build-ca nopass",                   creates: "pki/ca.crt" }
-    - { cmd: "./easyrsa build-server-full server nopass",   creates: "pki/issued/server.crt" }
-    - { cmd: "./easyrsa build-client-full client1 nopass",  creates: "pki/issued/client1.crt" }
+    - { cmd: "./easyrsa init-pki", creates: "pki" }
+    - { cmd: "./easyrsa build-ca nopass", creates: "pki/ca.crt" }
+    - { cmd: "./easyrsa build-server-full server nopass", creates: "pki/issued/server.crt" }
+    - { cmd: "./easyrsa build-client-full {{ vpn_client_name }} nopass", creates: "pki/issued/{{ vpn_client_name }}.crt" }
+  loop_control:
+    label: "{{ item.creates }}"
 
-- name: Server dir
-  file:
-    path: /etc/openvpn/server
+- name: Create the server directory
+  ansible.builtin.file:
+    path: "{{ vpn_server_dir }}"
     state: directory
     mode: "0700"
 
-- name: Generate tls-crypt key
-  command: openvpn --genkey secret /etc/openvpn/server/tls-crypt.key
-  args:
-    creates: /etc/openvpn/server/tls-crypt.key
+- name: Generate the tls-crypt key
+  ansible.builtin.command:
+    cmd: openvpn --genkey secret {{ vpn_server_dir }}/tls-crypt.key
+    creates: "{{ vpn_server_dir }}/tls-crypt.key"
 
-- name: Stage server key material
-  copy:
-    remote_src: yes
+- name: Stage the server key material
+  ansible.builtin.copy:
+    remote_src: true
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
+    mode: "0600"
   loop:
-    - { src: /etc/openvpn/easy-rsa/pki/ca.crt,             dest: /etc/openvpn/server/ca.crt }
-    - { src: /etc/openvpn/easy-rsa/pki/issued/server.crt,  dest: /etc/openvpn/server/server.crt }
-    - { src: /etc/openvpn/easy-rsa/pki/private/server.key, dest: /etc/openvpn/server/server.key }
+    - { src: "{{ vpn_easyrsa_dir }}/pki/ca.crt", dest: "{{ vpn_server_dir }}/ca.crt" }
+    - { src: "{{ vpn_easyrsa_dir }}/pki/issued/server.crt", dest: "{{ vpn_server_dir }}/server.crt" }
+    - { src: "{{ vpn_easyrsa_dir }}/pki/private/server.key", dest: "{{ vpn_server_dir }}/server.key" }
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: Restart openvpn
 
-- name: Write server.conf (split-tunnel; push lab route + DC DNS)
-  copy:
-    dest: /etc/openvpn/server/server.conf
-    content: |
-      port 1194
-      proto udp
-      dev tun
-      ca ca.crt
-      cert server.crt
-      key server.key
-      dh none
-      topology subnet
-      server 10.8.0.0 255.255.255.0
-      push "route 10.0.0.0 255.255.0.0"
-      push "dhcp-option DNS {{ dc_private_ip }}"
-      push "dhcp-option DOMAIN {{ domain_name }}"
-      keepalive 10 120
-      tls-crypt tls-crypt.key
-      cipher AES-256-GCM
-      data-ciphers AES-256-GCM
-      user nobody
-      group nogroup
-      persist-key
-      persist-tun
-      verb 3
-      explicit-exit-notify 1
-  notify: restart openvpn
+- name: Write server.conf
+  ansible.builtin.template:
+    src: server.conf.j2
+    dest: "{{ vpn_server_dir }}/server.conf"
+    mode: "0600"
+  notify: Restart openvpn
 
-- name: Configure NAT + forwarding for the VPN subnet
-  shell: |
-    set -e
-    EXT_IF=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
-    iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -o "$EXT_IF" -j MASQUERADE 2>/dev/null \
-      || iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o "$EXT_IF" -j MASQUERADE
-    iptables -C FORWARD -s 10.8.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -s 10.8.0.0/24 -j ACCEPT
-    iptables -C FORWARD -d 10.8.0.0/24 -j ACCEPT 2>/dev/null || iptables -A FORWARD -d 10.8.0.0/24 -j ACCEPT
-    netfilter-persistent save
-  changed_when: false
+# No NAT: the route table sends the client CIDR here, so lab hosts see the
+# client's own address and auth events attribute to it.
+- name: Forward traffic to and from the VPN subnet
+  ansible.builtin.iptables:
+    chain: FORWARD
+    source: "{{ item.source | default(omit) }}"
+    destination: "{{ item.destination | default(omit) }}"
+    jump: ACCEPT
+    state: present
+    action: append
+  loop:
+    - { source: "{{ vpn_client_cidr }}" }
+    - { destination: "{{ vpn_client_cidr }}" }
+  loop_control:
+    label: "{{ item.source | default(item.destination) }}"
+  notify: Persist iptables rules
 
-- name: Enable + start OpenVPN
-  systemd:
-    name: openvpn-server@server
-    enabled: yes
+- name: Enable and start OpenVPN
+  ansible.builtin.systemd_service:
+    name: "{{ vpn_service }}"
+    enabled: true
     state: started
+    daemon_reload: true
 
-- name: Assemble inline client1.ovpn (remote = this box's public IP)
-  shell: |
-    set -e
-    PKI=/etc/openvpn/easy-rsa/pki
-    {
-      echo "client"; echo "dev tun"; echo "proto udp"
-      echo "remote {{ ansible_host }} 1194"
-      echo "resolv-retry infinite"; echo "nobind"
-      echo "persist-key"; echo "persist-tun"
-      echo "remote-cert-tls server"; echo "cipher AES-256-GCM"; echo "verb 3"
-      echo "<ca>";        cat "$PKI/ca.crt";                          echo "</ca>"
-      echo "<cert>";      openssl x509 -in "$PKI/issued/client1.crt"; echo "</cert>"
-      echo "<key>";       cat "$PKI/private/client1.key";             echo "</key>"
-      echo "<tls-crypt>"; cat /etc/openvpn/server/tls-crypt.key;      echo "</tls-crypt>"
-    } > /home/ubuntu/client1.ovpn
-    chown ubuntu:ubuntu /home/ubuntu/client1.ovpn
-    chmod 600 /home/ubuntu/client1.ovpn
-  args:
-    creates: /home/ubuntu/client1.ovpn
+- name: Read the client PKI material
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ vpn_easyrsa_dir }}/pki/ca.crt"
+    - "{{ vpn_easyrsa_dir }}/pki/issued/{{ vpn_client_name }}.crt"
+    - "{{ vpn_easyrsa_dir }}/pki/private/{{ vpn_client_name }}.key"
+    - "{{ vpn_server_dir }}/tls-crypt.key"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: vpn_pki
+  no_log: true
 
-- name: Fetch client1.ovpn to the operator (lands in ansible/client1.ovpn)
-  fetch:
-    src: /home/ubuntu/client1.ovpn
-    dest: "{{ playbook_dir }}/client1.ovpn"
-    flat: yes
+# Rendered every run so the profile follows the public IP across stop/start.
+- name: Render the client profile
+  ansible.builtin.template:
+    src: client.ovpn.j2
+    dest: "/home/ubuntu/{{ vpn_client_name }}.ovpn"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+  vars:
+    vpn_endpoint: "{{ ansible_host }}"
+    vpn_ca_cert: "{{ vpn_pki.results[0].content | b64decode }}"
+    vpn_client_cert: "{{ vpn_pki.results[1].content | b64decode }}"
+    vpn_client_key: "{{ vpn_pki.results[2].content | b64decode }}"
+    vpn_tls_crypt: "{{ vpn_pki.results[3].content | b64decode }}"
+  no_log: true
+
+- name: Fetch the client profile to the operator
+  ansible.builtin.fetch:
+    src: "/home/ubuntu/{{ vpn_client_name }}.ovpn"
+    dest: "{{ vpn_profile_dest }}"
+    flat: true

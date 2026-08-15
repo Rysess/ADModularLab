@@ -1,41 +1,202 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
+- name: Fail early when no edr_server is in the inventory
+  ansible.builtin.assert:
+    that: elastic_private_ip | length > 0
+    fail_msg: >-
+      The edr_agent module enrols against an edr_server host, but none is in
+      the inventory. Check lab.yml.
+    quiet: true
 
-- name: Wait for the agent artifact to be served by edr_server
-  ansible.windows.win_uri:
-    url: "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip"
-    method: HEAD
-  register: zip_check
-  until: zip_check is succeeded
-  retries: 90
-  delay: 20
+- name: Check whether the Elastic Agent is already installed
+  ansible.windows.win_stat:
+    path: "{{ edr_agent_exe }}"
+  register: edr_agent_installed
 
-- name: Download + unzip agent
-  ansible.windows.win_shell: |
-    New-Item -Path "C:\temp" -ItemType Directory -Force | Out-Null
-    Invoke-WebRequest -Uri "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip" `
-      -UseBasicParsing -OutFile "C:\temp\elastic-agent-win.zip"
-    Expand-Archive -Path "C:\temp\elastic-agent-win.zip" -DestinationPath "C:\temp" -Force
+# The binary existing is not proof of enrolment.
+- name: Check whether the agent is enrolled in Fleet
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Exe: "{{ edr_agent_exe }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Exe)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      $out = & $Exe status 2>&1 | Out-String
+      if ($out -match 'Not enrolled into Fleet') { Write-Output 'unenrolled' }
+      elseif ($out -match 'Connected') { Write-Output 'enrolled' }
+      else { Write-Output 'unknown' }
+  register: edr_agent_status
+  when: edr_agent_installed.stat.exists
 
-- name: Install + enrol agent (fetches Fleet token from Kibana)
-  ansible.windows.win_shell: |
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $pair = "elastic:{{ admin_password }}"
-    $enc  = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
-    $headers = @{ Authorization = "Basic $enc"; "kbn-xsrf" = "true" }
-    add-type @"
-      using System.Net; using System.Security.Cryptography.X509Certificates;
-      public class TrustAll : ICertificatePolicy {
-        public bool CheckValidationResult(ServicePoint s, X509Certificate c, WebRequest r, int p) { return true; } }
-    "@
-    [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAll
-    $url = "https://{{ elastic_private_ip }}:5601/api/fleet/enrollment_api_keys"
-    $resp = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
-    $token = ($resp.list | Where-Object { $_.name -like "*Default*" } | Select-Object -First 1).api_key
-    if (-not $token) { throw "No Fleet token" }
-    cd C:\temp\elastic-agent-*
-    .\elastic-agent.exe install --url="https://{{ elastic_private_ip }}:8220" --enrollment-token="$token" --insecure -f
-  args:
-    creates: C:\Program Files\Elastic\Agent\elastic-agent.exe
+- name: Decide what the agent needs
+  ansible.builtin.set_fact:
+    # reinstall rather than enroll: `elastic-agent enroll` refuses to repair an
+    # existing install ("program files are not owned by the root user").
+    edr_agent_action: >-
+      {{ 'install' if not edr_agent_installed.stat.exists
+         else ('none' if 'enrolled' in (edr_agent_status.output | default([]))
+               else 'reinstall') }}
+
+- name: Bring the agent up to enrolled
+  when: edr_agent_action != 'none'
+  block:
+    - name: Wait for edr_server to publish the agent archive
+      ansible.windows.win_uri:
+        url: "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip"
+        method: HEAD
+      register: edr_agent_artifact
+      until: edr_agent_artifact is succeeded
+      retries: "{{ edr_agent_wait_retries }}"
+      delay: "{{ edr_agent_wait_delay }}"
+      when: edr_agent_action == 'install'
+
+    # Enrolling before fleet-server is up leaves an unenrolled agent behind.
+    - name: Wait for the Fleet server to accept connections
+      ansible.windows.win_wait_for:
+        host: "{{ elastic_private_ip }}"
+        port: "{{ edr_agent_fleet_port }}"
+        timeout: "{{ edr_agent_fleet_wait_timeout }}"
+
+    - name: Create the working directory
+      ansible.windows.win_file:
+        path: "{{ edr_agent_workdir }}"
+        state: directory
+
+    # C:\temp inherits read for Users from C:\, so staged secrets get an ACL.
+    - name: Create the protected staging directory
+      ansible.windows.win_file:
+        path: "{{ edr_agent_secret_dir }}"
+        state: directory
+
+    - name: Grant only administrators and SYSTEM on the staging directory
+      ansible.windows.win_acl:
+        path: "{{ edr_agent_secret_dir }}"
+        user: "{{ item }}"
+        rights: FullControl
+        type: allow
+        state: present
+        inherit: ContainerInherit, ObjectInherit
+        propagation: None
+      loop:
+        - BUILTIN\Administrators
+        - NT AUTHORITY\SYSTEM
+
+    - name: Drop inherited access from the staging directory
+      ansible.windows.win_acl_inheritance:
+        path: "{{ edr_agent_secret_dir }}"
+        state: absent
+        reorganize: false
+
+    - name: Download the agent archive
+      ansible.windows.win_get_url:
+        url: "http://{{ elastic_private_ip }}/elastic-agent/elastic-agent-win.zip"
+        dest: "{{ edr_agent_workdir }}\\elastic-agent-win.zip"
+
+    - name: Unpack the agent archive
+      community.windows.win_unzip:
+        src: "{{ edr_agent_workdir }}\\elastic-agent-win.zip"
+        dest: "{{ edr_agent_workdir }}"
+        delete_archive: false
+
+    - name: Fetch the Fleet enrollment keys from Kibana
+      ansible.windows.win_uri:
+        url: "https://{{ elastic_private_ip }}:{{ edr_agent_kibana_port }}/api/fleet/enrollment_api_keys"
+        method: GET
+        url_username: elastic
+        url_password: "{{ elastic_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          kbn-xsrf: "true"
+        return_content: true
+      register: edr_agent_keys
+      until: edr_agent_keys is succeeded
+      retries: 10
+      delay: 30
+      no_log: true
+
+    - name: Select the default enrollment token
+      ansible.builtin.set_fact:
+        edr_agent_token: >-
+          {{ edr_agent_keys.json.list
+             | selectattr('name', 'search', 'Default')
+             | map(attribute='api_key')
+             | first }}
+      no_log: true
+
+    # Staged to a file, not a parameter: no_log would hide the installer output.
+    - name: Stage the enrollment token
+      ansible.windows.win_copy:
+        content: "{{ edr_agent_token }}"
+        dest: "{{ edr_agent_secret_dir }}\\fleet-token"
+      no_log: true
+
+    # elastic-agent writes progress to stderr; piping that through PowerShell's
+    # error stream fails the task spuriously and mangles the message.
+    - name: Install and enrol the agent
+      ansible.windows.win_powershell:
+        error_action: continue
+        parameters:
+          Action: "{{ edr_agent_action }}"
+          Workdir: "{{ edr_agent_workdir }}"
+          SecretDir: "{{ edr_agent_secret_dir }}"
+          Exe: "{{ edr_agent_exe }}"
+          FleetUrl: "https://{{ elastic_private_ip }}:{{ edr_agent_fleet_port }}"
+        script: |
+          [CmdletBinding()]
+          param(
+            [Parameter(Mandatory)][string]$Action,
+            [Parameter(Mandatory)][string]$Workdir,
+            [Parameter(Mandatory)][string]$SecretDir,
+            [Parameter(Mandatory)][string]$Exe,
+            [Parameter(Mandatory)][string]$FleetUrl
+          )
+          Set-StrictMode -Version Latest
+
+          $tokenFile = Join-Path $SecretDir 'fleet-token'
+          $token = (Get-Content -Path $tokenFile -Raw).Trim()
+          Remove-Item -Path $tokenFile -Force
+
+          $outFile = Join-Path $Workdir 'agent.out'
+          $errFile = Join-Path $Workdir 'agent.err'
+
+          function Invoke-Agent($Path, $Arguments) {
+              $p = Start-Process -FilePath $Path -ArgumentList $Arguments `
+                  -NoNewWindow -Wait -PassThru `
+                  -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+              $text = @(
+                  (Get-Content -Path $outFile -Raw -ErrorAction SilentlyContinue)
+                  (Get-Content -Path $errFile -Raw -ErrorAction SilentlyContinue)
+              ) -join "`n"
+              Write-Output ($text -replace [regex]::Escape($token), '<token>')
+              return $p.ExitCode
+          }
+
+          if ($Action -eq 'reinstall') {
+              Write-Output '--- uninstalling the unenrolled agent ---'
+              $rc = Invoke-Agent $Exe @('uninstall', '-f')
+              if ($rc -ne 0) {
+                  $Ansible.Failed = $true
+                  Write-Output "uninstall exit code: $rc"
+                  return
+              }
+          }
+
+          $dir = Get-ChildItem -Path $Workdir -Directory -Filter 'elastic-agent-*' |
+                 Sort-Object Name | Select-Object -Last 1
+          if (-not $dir) {
+              $Ansible.Failed = $true
+              Write-Output "No unpacked elastic-agent-* directory under $Workdir"
+              return
+          }
+
+          Write-Output '--- installing ---'
+          $rc = Invoke-Agent (Join-Path $dir.FullName 'elastic-agent.exe') `
+              @('install', "--url=$FleetUrl", "--enrollment-token=$token", '--insecure', '-f')
+          Write-Output "action: $Action, exit code: $rc"
+
+          Remove-Item -Path $outFile, $errFile -Force -ErrorAction SilentlyContinue
+          if ($rc -ne 0) { $Ansible.Failed = $true }
+          $Ansible.Changed = $true

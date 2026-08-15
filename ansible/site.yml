@@ -1,41 +1,86 @@
 ---
+- name: Wait for hosts to accept connections
+  hosts: all
+  gather_facts: false
+  strategy: free
+  tags: always
+  tasks:
+    - name: Wait for connection
+      ansible.builtin.wait_for_connection:
+        timeout: 900
+
+# Members are renamed during the join; everything else up front, because a DC
+# cannot be renamed once promoted.
+- name: Set Windows computer names
+  hosts: windows:!role_member
+  gather_facts: false
+  strategy: free
+  tags: [base, prepare, dc]
+  tasks:
+    - name: Set computer name
+      ansible.windows.win_hostname:
+        name: "{{ inventory_hostname }}"
+      register: rename
+
+    - name: Reboot to apply the computer name
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+        post_reboot_delay: 15
+      when: rename.reboot_required
+
 - name: Promote domain controllers
   hosts: role_dc
-  gather_facts: no
+  gather_facts: false
   tags: [base, dc]
   roles:
     - dc
 
+- name: Promote child domain controllers
+  hosts: role_child_dc
+  gather_facts: false
+  tags: [base, child_dc]
+  roles:
+    - domain_child
+
 - name: Join domain members
   hosts: role_member
-  gather_facts: no
+  gather_facts: false
+  strategy: free
   tags: [base, member]
   roles:
     - domain_member
 
 - name: Apply modules (Linux)
   hosts: linux
-  gather_facts: yes
-  become: yes
+  gather_facts: true
+  become: true
+  strategy: free
   tags: [modules]
   tasks:
-    - include_role:
+    - name: Include module role
+      ansible.builtin.include_role:
         name: "{{ mod }}"
-      loop: "{{ modules | default([]) }}"
+        apply:
+          tags: [modules]
+      loop: "{{ modules | default([], true) }}"
       loop_control:
         loop_var: mod
         label: "{{ mod }}"
-      when: modules | default([]) | length > 0
+      tags: [modules]
 
 - name: Apply modules (Windows)
   hosts: windows
-  gather_facts: yes
+  gather_facts: false
+  strategy: free
   tags: [modules]
   tasks:
-    - include_role:
+    - name: Include module role
+      ansible.builtin.include_role:
         name: "{{ mod }}"
-      loop: "{{ modules | default([]) }}"
+        apply:
+          tags: [modules]
+      loop: "{{ modules | default([], true) }}"
       loop_control:
         loop_var: mod
         label: "{{ mod }}"
-      when: modules | default([]) | length > 0
+      tags: [modules]

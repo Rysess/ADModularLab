@@ -1,53 +1,96 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
-
-- name: Ensure AD PowerShell tooling
+- name: Ensure the ActiveDirectory PowerShell module is present
   ansible.windows.win_feature:
     name: RSAT-AD-PowerShell
     state: present
 
-- name: Create {{ gmsa_count }} KDS root keys and {{ gmsa_count }} gMSA accounts
-  ansible.windows.win_shell: |
-    Import-Module ActiveDirectory -ErrorAction Stop
-    $count      = {{ gmsa_count }}
-    $prefix     = "{{ gmsa_name_prefix }}"
-    $principals = "{{ gmsa_principals }}"
-    $domain     = "{{ domain_name }}"
-    $changed    = $false
+- name: Create each gMSA against its own KDS root key
+  ansible.builtin.include_tasks: pair.yml
+  loop: "{{ range(1, gmsa_count + 1) | list }}"
+  loop_control:
+    loop_var: gmsa_index
+    label: "{{ gmsa_name_prefix }}{{ gmsa_index }}"
+  when: gmsa_dedicated_kds_key | bool
 
-    # 1) Ensure $count KDS root keys exist (backdated so they are usable now)
-    $have = @(Get-KdsRootKey).Count
-    for ($i = $have; $i -lt $count; $i++) {
-        Add-KdsRootKey -EffectiveTime ((Get-Date).AddHours(-10)) | Out-Null
-        $changed = $true
-    }
-    $keys = @(Get-KdsRootKey | Sort-Object EffectiveTime | Select-Object -Last $count)
+- name: Create the gMSA accounts against the current KDS root key
+  when: not (gmsa_dedicated_kds_key | bool)
+  block:
+    - name: Read the KDS root keys already in the domain
+      microsoft.ad.kds_root_key_info:
+      register: gmsa_existing_keys
 
-    # 2) Ensure $count gMSA accounts, each paired (nominally) with one root key
-    for ($i = 1; $i -le $count; $i++) {
-        $name  = "$prefix$i"
-        $keyId = $keys[$i-1].KeyId.Guid
-        if (-not (Get-ADServiceAccount -Filter "Name -eq '$name'" -ErrorAction SilentlyContinue)) {
-            New-ADServiceAccount -Name $name `
-                -DNSHostName "$name.$domain" `
-                -PrincipalsAllowedToRetrieveManagedPassword $principals `
-                -KerberosEncryptionType AES128,AES256 `
-                -Description "Lab gMSA paired with KDS root key $keyId" `
-                -Enabled $true
-            $changed = $true
-        }
-    }
+    - name: Create a KDS root key if the domain has none
+      microsoft.ad.kds_root_key:
+        effective_time_hours: 0
+        match_by: any
+        state: present
+      when: gmsa_existing_keys.kds_root_keys | length == 0
 
-    "KDS root keys total: " + @(Get-KdsRootKey).Count
-    Get-ADServiceAccount -Filter * |
-        Select-Object Name, @{n='RootKey';e={($_.Description -split 'root key ')[-1]}} |
-        Format-Table -AutoSize | Out-String
-    if ($changed) { "CHANGED" } else { "NOCHANGE" }
-  register: gmsa_out
-  changed_when: "'CHANGED' in gmsa_out.stdout"
+    - name: Create the gMSA accounts
+      microsoft.ad.service_account:
+        identity: "{{ gmsa_name_prefix }}{{ item }}"
+        name: "{{ gmsa_name_prefix }}{{ item }}"
+        dns_hostname: "{{ gmsa_name_prefix }}{{ item }}.{{ domain_name }}"
+        enabled: true
+        kerberos_encryption_types:
+          set: "{{ gmsa_kerberos_encryption_types }}"
+        allowed_to_retrieve_password:
+          set: "{{ gmsa_principals }}"
+        state: present
+      loop: "{{ range(1, gmsa_count + 1) | list }}"
+      loop_control:
+        label: "{{ gmsa_name_prefix }}{{ item }}"
 
-- name: Show gMSA / KDS summary
-  debug:
-    var: gmsa_out.stdout_lines
+# Written from msDS-ManagedPasswordId, so it states the key actually bound.
+- name: Record and report the root key each gMSA is actually bound to
+  ansible.windows.win_powershell:
+    parameters:
+      Prefix: "{{ gmsa_name_prefix }}"
+      Count: "{{ gmsa_count }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Prefix,
+        [Parameter(Mandatory)][int]$Count
+      )
+      $ErrorActionPreference = 'Stop'
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+
+      # Not Get-KdsRootKey: it emits one array-valued object rather than
+      # unrolling, so $_.KeyId becomes an Object[]. Object name is the GUID.
+      $cfg = (Get-ADRootDSE).configurationNamingContext
+      $base = "CN=Master Root Keys,CN=Group Key Distribution Service,CN=Services,$cfg"
+      $known = @(
+          Get-ADObject -SearchBase $base -Filter "objectClass -eq 'msKds-ProvRootKey'" |
+              ForEach-Object { $_.Name }
+      )
+
+      for ($i = 1; $i -le $Count; $i++) {
+          $name = "$Prefix$i"
+          $sa = Get-ADServiceAccount -Identity $name -Properties 'msDS-ManagedPasswordId', 'Description'
+
+          # Root key GUID: 16 bytes at offset 24.
+          $blob = $sa.'msDS-ManagedPasswordId'
+          if (-not $blob -or $blob.Length -lt 40) {
+              throw "$name has no usable msDS-ManagedPasswordId"
+          }
+          $rootKey = [guid]::new([byte[]]($blob[24..39]))
+
+          $state = if ($known -contains $rootKey.Guid) { 'ok' } else { 'ROOT KEY NOT IN DOMAIN' }
+          Write-Output ("{0,-12} -> {1}  [{2}]" -f $name, $rootKey.Guid, $state)
+
+          $desc = "Lab gMSA bound to KDS root key $($rootKey.Guid)"
+          if ($sa.Description -ne $desc) {
+              Set-ADServiceAccount -Identity $name -Description $desc
+              $Ansible.Changed = $true
+          }
+      }
+
+      Write-Output ("KDS root keys in domain: {0}" -f $known.Count)
+  register: gmsa_pairing
+
+- name: Show the gMSA / KDS root key pairing
+  ansible.builtin.debug:
+    var: gmsa_pairing.output

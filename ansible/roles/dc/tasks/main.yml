@@ -1,87 +1,30 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
-
-- name: Set computer name (before promotion)
-  ansible.windows.win_hostname:
-    name: "{{ inventory_hostname }}"
-  register: rename
-
-- name: Reboot to apply computer name
-  ansible.windows.win_reboot:
-    reboot_timeout: 600
-  when: rename.reboot_required
-
-- name: Check current domain role
-  ansible.windows.win_shell: (Get-WmiObject Win32_ComputerSystem).DomainRole
-  register: domain_role
-  changed_when: false
-
-- set_fact:
-    is_domain_controller: "{{ domain_role.stdout | int >= 4 }}"
-
-- name: Install AD DS
-  ansible.windows.win_feature:
-    name: AD-Domain-Services
-    include_management_tools: yes
-    state: present
-  when: not is_domain_controller
-
-- name: Promote to Domain Controller
+# Renamed by site.yml before this runs: a DC cannot be renamed once promoted.
+# microsoft.ad.domain installs the features, promotes only when needed, and
+# owns the reboot.
+- name: Promote to domain controller
   microsoft.ad.domain:
     dns_domain_name: "{{ domain_name }}"
-    safe_mode_password: "{{ admin_password }}"
+    safe_mode_password: "{{ dsrm_password }}"
+    install_dns: true
+    forest_mode: "{{ dc_forest_mode | default(omit, true) }}"
+    domain_mode: "{{ dc_domain_mode | default(omit, true) }}"
     reboot: true
-  register: domain_install
-  when: not is_domain_controller
 
-- name: Reboot after promotion
-  ansible.windows.win_reboot:
-    reboot_timeout: 600
-  when: domain_install.reboot_required | default(false)
-
-- name: DC uses itself for DNS
+- name: Resolve through itself, then the VPC resolver
   ansible.windows.win_dns_client:
     adapter_names: "*"
-    ipv4_addresses: ["127.0.0.1", "10.0.0.2"]
+    dns_servers: "{{ dc_dns_servers }}"
 
-- name: Wait for ADWS
+- name: Wait for Active Directory Web Services
   ansible.windows.win_service:
     name: ADWS
     state: started
+  register: dc_adws
+  until: dc_adws is succeeded
   retries: 10
   delay: 30
-  register: adws
-  until: adws is succeeded
 
-- name: Create lab users
-  microsoft.ad.user:
-    name: "LabUser{{ item }}"
-    sam_account_name: "LabUser{{ item }}"
-    upn: "LabUser{{ item }}@{{ domain_name }}"
-    password: "{{ admin_password }}"
-    state: present
-    enabled: yes
-    password_never_expires: yes
-  loop: "{{ range(1, 11) | list }}"
-  ignore_errors: yes
-
-- name: Create Domain Admin
-  microsoft.ad.user:
-    name: "John John"
-    sam_account_name: "{{ domain_admin_user }}"
-    upn: "{{ domain_admin_user }}@{{ domain_name }}"
-    password: "{{ admin_password }}"
-    state: present
-    enabled: yes
-    password_never_expires: yes
-  ignore_errors: yes
-
-- name: Add to Domain Admins
-  microsoft.ad.group:
-    name: Domain Admins
-    members:
-      add: ["{{ domain_admin_user }}"]
-    state: present
-  ignore_errors: yes
+- name: Create the lab accounts
+  ansible.builtin.include_tasks:
+    file: lab_accounts.yml

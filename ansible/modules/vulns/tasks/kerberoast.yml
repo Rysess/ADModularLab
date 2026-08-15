@@ -1,0 +1,18 @@
+---
+# An SPN makes the account roastable; the weak password makes it a finding.
+- name: Create the kerberoastable service accounts
+  microsoft.ad.user:
+    identity: "{{ item.sam }}"
+    name: "{{ item.display }}"
+    sam_account_name: "{{ item.sam }}"
+    upn: "{{ item.sam }}@{{ domain_name }}"
+    password: "{{ item.password }}"
+    update_password: on_create
+    password_never_expires: true
+    enabled: true
+    spn:
+      set: ["{{ item.spn }}"]
+    state: present
+  loop: "{{ vulns_kerberoast_accounts }}"
+  loop_control:
+    label: "{{ item.sam }} ({{ item.spn }})"

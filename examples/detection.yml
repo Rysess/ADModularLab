@@ -1,0 +1,71 @@
+---
+# Domain plus telemetry: a DC, a member server with shares and SQL, the Elastic
+# stack, and agents reporting into it. The expensive one at about $0.31/hour;
+# stop it between sessions.
+#
+#   LAB_FILE=examples/detection.yml ./run.sh
+#
+# Demonstrates per-host module variables: the modules list takes either a bare
+# name or a mapping with a vars block.
+
+lab:
+  name: detection-lab
+  region: eu-west-3
+  domain: lab.local
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 72
+
+defaults:
+  windows_instance_type: t3.large
+  linux_instance_type: t3.large
+  windows_disk_gb: 50
+  linux_disk_gb: 50
+  windows_version: "2022"
+  ubuntu_release: "22.04"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    instance_type: t3.large
+    private_ip: 10.0.1.10
+    modules:
+      - name: gmsa
+        vars:
+          gmsa_count: 6
+      - name: vulns
+        vars:
+          vulns_kerberoast: true
+          vulns_asreproast: true
+          vulns_dcsync: true
+          vulns_dcsync_principals: [LabUser5]
+      - edr_agent
+
+  - name: srv-win01
+    os: windows
+    role: member
+    instance_type: t3.medium
+    modules:
+      - shares
+      - sql_server
+      - edr_agent
+
+  - name: elastic01
+    os: linux
+    role: standalone
+    instance_type: t3.large
+    disk_gb: 100
+    modules:
+      - edr_server
+
+  - name: vpn01
+    os: linux
+    role: standalone
+    instance_type: t3.nano
+    disk_gb: 8
+    source_dest_check: false
+    expose_ports:
+      - { port: 1194, proto: udp }
+    modules:
+      - vpn

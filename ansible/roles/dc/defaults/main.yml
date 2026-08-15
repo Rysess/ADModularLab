@@ -1,0 +1,29 @@
+---
+# Overridden by domain_child so the same task file can populate a child domain.
+dc_accounts_domain: "{{ domain_name }}"
+
+dc_lab_user_count: 10
+dc_lab_user_prefix: LabUser
+
+# Empty selects the default for the Windows Server version in use.
+dc_forest_mode: ""
+dc_domain_mode: ""
+
+# ::1 belongs here: win_dns_client compares every address family on the
+# adapter, and promotion binds the DNS role to ::1.
+dc_dns_servers:
+  - 127.0.0.1
+  - "{{ vpc_dns_ip }}"
+  - "::1"
+
+dc_child_dc_display: Child Domain Promotion
+dc_child_dc_groups:
+  - Enterprise Admins
+  - Domain Admins
+dc_child_dc_required: >-
+  {{ groups['role_child_dc'] | default([])
+     | map('extract', hostvars, 'domain_name')
+     | select('equalto', domain_name) | list | length > 0 }}
+
+dc_ad_retries: 5
+dc_ad_delay: 15

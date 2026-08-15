@@ -1,0 +1,17 @@
+---
+vpn_port: 1194
+vpn_proto: udp
+vpn_cipher: AES-256-GCM
+vpn_client_name: client1
+
+vpn_easyrsa_dir: /etc/openvpn/easy-rsa
+vpn_server_dir: /etc/openvpn/server
+vpn_service: openvpn-server@server
+
+# EC purely for speed: the lab's VPN is an access path, not a secret store.
+vpn_easyrsa_algo: ec
+vpn_easyrsa_curve: prime256v1
+vpn_ca_cn: lab-ovpn-ca
+
+# Where the generated profile lands on the operator's machine.
+vpn_profile_dest: "{{ playbook_dir }}/{{ vpn_client_name }}.ovpn"

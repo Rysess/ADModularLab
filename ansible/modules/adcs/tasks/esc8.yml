@@ -1,0 +1,85 @@
+---
+# HTTP with no channel binding, so NTLM to /certsrv can be relayed.
+- name: Install the Web Enrollment role
+  ansible.windows.win_feature:
+    name: ADCS-Web-Enrollment
+    include_management_tools: true
+    state: present
+  register: adcs_web_role
+
+- name: Reboot if the web enrollment role asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: adcs_web_role.reboot_required
+
+- name: Configure web enrollment
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      User: "{{ adcs_install_user }}"
+      Password: "{{ adcs_install_password }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$Password
+      )
+      Set-StrictMode -Version Latest
+      Import-Module ADCSDeployment
+      Import-Module WebAdministration
+      $Ansible.Changed = $false
+
+      if (Test-Path 'IIS:\Sites\Default Web Site\CertSrv') {
+          Write-Output 'web enrollment already configured'
+          return
+      }
+
+      $cred = New-Object System.Management.Automation.PSCredential(
+          $User, (ConvertTo-SecureString $Password -AsPlainText -Force))
+
+      $res = Install-AdcsWebEnrollment -Credential $cred -Force
+      Write-Output "ErrorId: $($res.ErrorId) $($res.ErrorString)"
+      if ($res.ErrorId -ne 0) { $Ansible.Failed = $true; return }
+      $Ansible.Changed = $true
+  no_log: true
+  register: adcs_web
+
+- name: Report the web enrollment configuration
+  ansible.builtin.debug:
+    var: adcs_web.output
+
+# Asserts the default rather than assuming it.
+- name: Leave the enrollment endpoint on HTTP without channel binding
+  ansible.windows.win_powershell:
+    error_action: continue
+    script: |
+      Set-StrictMode -Version Latest
+      Import-Module WebAdministration
+      $Ansible.Changed = $false
+
+      $filter = 'system.webServer/security/authentication/windowsAuthentication'
+      $vdir = 'Default Web Site/CertSrv'
+
+      # Returns a bare String here, not a ConfigurationAttribute.
+      $raw = Get-WebConfigurationProperty -Filter $filter -Location $vdir `
+          -Name extendedProtection.tokenChecking
+      $current = if ($raw -is [string]) { $raw }
+                 elseif ($null -ne $raw) { [string]$raw.Value }
+                 else { '' }
+      Write-Output "extended protection: '$current'"
+
+      if ($current -ne 'None') {
+          Set-WebConfigurationProperty -Filter $filter -Location $vdir `
+              -Name extendedProtection.tokenChecking -Value 'None'
+          Write-Output 'disabled extended protection on /certsrv'
+          $Ansible.Changed = $true
+      }
+
+      $bindings = @(Get-WebBinding -Name 'Default Web Site')
+      Write-Output ("bindings: " + (($bindings | ForEach-Object { $_.bindingInformation + ' ' + $_.protocol }) -join ', '))
+  register: adcs_epa
+
+- name: Report the enrollment endpoint
+  ansible.builtin.debug:
+    var: adcs_epa.output

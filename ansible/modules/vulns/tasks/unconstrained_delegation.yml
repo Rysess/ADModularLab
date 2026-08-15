@@ -1,0 +1,11 @@
+---
+# A computer trusted for delegation to any service caches the TGT of every
+# principal that authenticates to it. Compromise the host, replay the tickets.
+- name: Trust the computer accounts for delegation to any service
+  microsoft.ad.computer:
+    identity: "{{ item }}$"
+    trusted_for_delegation: true
+    state: present
+  loop: "{{ vulns_unconstrained_delegation_computers }}"
+  loop_control:
+    label: "{{ item }}$"

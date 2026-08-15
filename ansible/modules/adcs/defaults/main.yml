@@ -1,0 +1,27 @@
+---
+adcs_dc_host: "{{ domain_dc_host }}"
+
+adcs_ca_common_name: "{{ domain_netbios }}-CA"
+adcs_ca_type: EnterpriseRootCA
+adcs_key_length: 4096
+adcs_hash_algorithm: SHA256
+adcs_validity_years: 10
+
+# Enterprise Admin: an enterprise CA install and template writes both need it.
+adcs_install_user: "{{ domain_netbios }}\\Administrator"
+adcs_install_password: "{{ hostvars[adcs_dc_host].ansible_password }}"
+
+adcs_esc1: false
+adcs_esc4: false
+adcs_esc8: false
+adcs_esc11: false
+
+adcs_esc1_template: LabUserAuth
+adcs_esc1_display_name: Lab User Authentication
+adcs_esc1_enrollees:
+  - Domain Users
+
+adcs_esc4_template: LabWebServer
+adcs_esc4_display_name: Lab Web Server
+adcs_esc4_writers:
+  - Domain Users

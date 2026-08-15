@@ -1,0 +1,11 @@
+---
+edr_agent_workdir: 'C:\temp'
+edr_agent_secret_dir: "{{ edr_agent_workdir }}\\adlab-secrets"
+edr_agent_exe: 'C:\Program Files\Elastic\Agent\elastic-agent.exe'
+
+edr_agent_kibana_port: 5601
+edr_agent_fleet_port: 8220
+
+edr_agent_wait_retries: 90
+edr_agent_wait_delay: 20
+edr_agent_fleet_wait_timeout: 900

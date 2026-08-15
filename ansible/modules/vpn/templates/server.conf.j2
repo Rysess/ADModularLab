@@ -1,0 +1,28 @@
+{{ ansible_managed | comment }}
+port {{ vpn_port }}
+proto {{ vpn_proto }}
+dev tun
+ca ca.crt
+cert server.crt
+key server.key
+dh none
+topology subnet
+server {{ vpn_client_network }} {{ vpn_client_netmask }}
+
+# Split tunnel: only the lab is routed over the VPN.
+push "route {{ vpc_network }} {{ vpc_netmask }}"
+{% if dc_private_ip %}
+push "dhcp-option DNS {{ dc_private_ip }}"
+push "dhcp-option DOMAIN {{ domain_name }}"
+{% endif %}
+
+keepalive 10 120
+tls-crypt tls-crypt.key
+cipher {{ vpn_cipher }}
+data-ciphers {{ vpn_cipher }}
+user nobody
+group nogroup
+persist-key
+persist-tun
+verb 3
+explicit-exit-notify 1

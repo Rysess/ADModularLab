@@ -1,0 +1,105 @@
+---
+# Renamed by site.yml before this runs: a DC cannot be renamed once promoted.
+
+- name: Fail early when the parent domain has no domain controller
+  ansible.builtin.assert:
+    that:
+      - domain_child_parent_domain in dc_hosts_by_domain
+      - domain_child_parent_host in hostvars
+    fail_msg: >-
+      No role=dc host serves {{ domain_child_parent_domain }}. Check the parent
+      domain, or override domain_child_parent_host.
+    quiet: true
+
+- name: Check whether this host is already a domain controller
+  ansible.windows.win_powershell:
+    script: |
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      [int]((Get-CimInstance Win32_ComputerSystem).DomainRole) -ge 4
+  register: domain_child_is_dc
+
+# Pre-promotion only; afterwards the resolver task below owns the list.
+- name: Point DNS at the forest root
+  ansible.windows.win_dns_client:
+    adapter_names: "*"
+    dns_servers: ["{{ hostvars[domain_child_parent_host].private_ip }}"]
+  when: not (domain_child_is_dc.output | first)
+
+- name: Wait for the forest root to serve LDAP
+  ansible.windows.win_wait_for:
+    host: "{{ hostvars[domain_child_parent_host].private_ip }}"
+    port: 389
+    timeout: "{{ domain_child_parent_wait_timeout }}"
+
+- name: Promote to child domain controller
+  microsoft.ad.domain_child:
+    dns_domain_name: "{{ domain_child_domain }}"
+    domain_type: child
+    domain_admin_user: "{{ domain_child_admin_user }}"
+    domain_admin_password: "{{ domain_child_admin_password }}"
+    safe_mode_password: "{{ dsrm_password }}"
+    install_dns: true
+    reboot: true
+  register: domain_child_promote
+  until: domain_child_promote is succeeded
+  retries: "{{ domain_child_retries }}"
+  delay: "{{ domain_child_delay }}"
+
+# ::1 included: win_dns_client compares every address family on the adapter.
+- name: Resolve through itself, then the forest root
+  ansible.windows.win_dns_client:
+    adapter_names: "*"
+    dns_servers:
+      - 127.0.0.1
+      - "{{ hostvars[domain_child_parent_host].private_ip }}"
+      - "::1"
+
+- name: Wait for Active Directory Web Services
+  ansible.windows.win_service:
+    name: ADWS
+    state: started
+  register: domain_child_adws
+  until: domain_child_adws is succeeded
+  retries: 10
+  delay: 30
+
+# ADWS being up is not the same as the domain being locatable by a member.
+- name: Wait for the child domain to answer a locator query
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Domain: "{{ domain_child_domain }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Domain)
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+
+      $d = Get-ADDomain -Identity $Domain -ErrorAction SilentlyContinue
+      if (-not $d) {
+          $Ansible.Failed = $true
+          Write-Output "$Domain is not answering LDAP yet"
+          return
+      }
+      $out = & nltest "/dsgetdc:$Domain" 2>&1 | Out-String
+      if ($LASTEXITCODE -ne 0) {
+          $Ansible.Failed = $true
+          Write-Output "dsgetdc failed for $Domain"
+          return
+      }
+      Write-Output $out.Trim()
+  register: domain_child_locatable
+  until: domain_child_locatable is succeeded
+  retries: "{{ domain_child_locator_retries }}"
+  delay: "{{ domain_child_locator_delay }}"
+
+# Without these the child domain has no account a member could join with.
+- name: Create the lab accounts in the child domain
+  ansible.builtin.include_role:
+    name: dc
+    tasks_from: lab_accounts
+  vars:
+    dc_accounts_domain: "{{ domain_child_domain }}"
+    dc_child_dc_required: false

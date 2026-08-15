@@ -1,40 +1,55 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
+- name: Fail early when no domain controller is in the inventory
+  ansible.builtin.assert:
+    that: dc_private_ip | length > 0
+    fail_msg: >-
+      No host with role=dc found in the lab. The domain_member role needs one;
+      check lab.yml and that the DC instance is running.
+    quiet: true
 
-- name: Set computer name (before domain join)
-  ansible.windows.win_hostname:
-    name: "{{ inventory_hostname }}"
-  register: rename
+- name: Point DNS at the domain controller
+  ansible.windows.win_dns_client:
+    adapter_names: "*"
+    dns_servers: ["{{ dc_private_ip }}"]
 
-- name: Reboot to apply computer name
-  ansible.windows.win_reboot:
-    reboot_timeout: 600
-  when: rename.reboot_required
+- name: Wait for the domain controller to serve LDAP
+  ansible.windows.win_wait_for:
+    host: "{{ dc_private_ip }}"
+    port: 389
+    timeout: "{{ domain_member_dc_wait_timeout }}"
 
-- name: Wait for the domain to resolve
-  ansible.windows.win_shell: |
-    $n=0
-    while (!(Resolve-DnsName {{ domain_name }} -ErrorAction SilentlyContinue) -and ($n -lt 30)) {
-      Start-Sleep -Seconds 30; $n++
-    }
-    if ($n -ge 30) { throw "Domain not available" }
-    "ok"
-  register: dns_wait
-  retries: 3
-  delay: 60
-  until: dns_wait is succeeded
+# A listening LDAP port is not proof the domain can service a join.
+- name: Wait for the domain to be locatable
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Domain: "{{ domain_name }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Domain)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      $srv = Resolve-DnsName -Name "_ldap._tcp.dc._msdcs.$Domain" -Type SRV -ErrorAction SilentlyContinue
+      if (-not $srv) {
+          $Ansible.Failed = $true
+          Write-Output "no SRV records for $Domain yet"
+          return
+      }
+      ($srv | Where-Object { $_.Type -eq 'SRV' } | ForEach-Object NameTarget) -join ', '
+  register: domain_member_locatable
+  until: domain_member_locatable is succeeded
+  retries: "{{ domain_member_locator_retries }}"
+  delay: "{{ domain_member_locator_delay }}"
 
-- name: Join domain
+- name: Set the computer name and join the domain
   microsoft.ad.membership:
+    hostname: "{{ inventory_hostname }}"
     dns_domain_name: "{{ domain_name }}"
     domain_admin_user: "{{ domain_admin_user }}@{{ domain_name }}"
-    domain_admin_password: "{{ admin_password }}"
+    domain_admin_password: "{{ domain_admin_pw }}"
     state: domain
-  register: join
-
-- name: Reboot after join
-  ansible.windows.win_reboot:
-    reboot_timeout: 600
-  when: join.reboot_required
+    reboot: true
+  register: domain_member_join
+  until: domain_member_join is succeeded
+  retries: "{{ domain_member_join_retries }}"
+  delay: "{{ domain_member_join_delay }}"

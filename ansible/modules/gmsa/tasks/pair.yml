@@ -1,0 +1,30 @@
+---
+# Key then account, so the account binds to that key. Both guarded; a re-run
+# rebinds nothing, msDS-ManagedPasswordId is fixed at creation.
+- name: Name this iteration's gMSA
+  ansible.builtin.set_fact:
+    gmsa_pair_name: "{{ gmsa_name_prefix }}{{ gmsa_index }}"
+
+- name: Count the KDS root keys already in the domain before creating {{ gmsa_pair_name }}
+  microsoft.ad.kds_root_key_info:
+  register: gmsa_keys_before
+
+# 0 backdates the key ten hours so it is usable at once. Single-DC only.
+- name: Create the dedicated KDS root key for {{ gmsa_pair_name }}
+  microsoft.ad.kds_root_key:
+    effective_time_hours: 0
+    match_by: never
+    state: present
+  when: gmsa_keys_before.kds_root_keys | length < gmsa_index
+
+- name: Create the service account {{ gmsa_pair_name }}
+  microsoft.ad.service_account:
+    identity: "{{ gmsa_pair_name }}"
+    name: "{{ gmsa_pair_name }}"
+    dns_hostname: "{{ gmsa_pair_name }}.{{ domain_name }}"
+    enabled: true
+    kerberos_encryption_types:
+      set: "{{ gmsa_kerberos_encryption_types }}"
+    allowed_to_retrieve_password:
+      set: "{{ gmsa_principals }}"
+    state: present

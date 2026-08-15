@@ -1,0 +1,168 @@
+---
+- name: Check that Windows LAPS is present
+  ansible.windows.win_powershell:
+    error_action: continue
+    script: |
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      if (-not (Get-Module -ListAvailable -Name LAPS)) {
+          $Ansible.Failed = $true
+          Write-Output 'The LAPS PowerShell module is absent. Windows LAPS needs Server 2019 or later with the April 2023 update.'
+          return
+      }
+      Import-Module LAPS
+      (Get-Module LAPS).Version.ToString()
+  register: laps_module
+
+- name: Report the LAPS module version
+  ansible.builtin.debug:
+    var: laps_module.output
+
+# Forest-wide and irreversible. Guarded on the attribute rather than run_once,
+# which is unreliable under the free strategy.
+- name: Extend the schema for Windows LAPS
+  ansible.windows.win_powershell:
+    error_action: continue
+    script: |
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      Import-Module LAPS
+      $Ansible.Changed = $false
+
+      $schema = (Get-ADRootDSE).schemaNamingContext
+      $attr = Get-ADObject -SearchBase $schema -LDAPFilter '(lDAPDisplayName=msLAPS-Password)' -ErrorAction SilentlyContinue
+      if ($attr) {
+          Write-Output 'msLAPS-Password already in the schema'
+          return
+      }
+
+      Update-LapsADSchema -Confirm:$false | Out-String
+      Write-Output 'schema extended'
+      $Ansible.Changed = $true
+  delegate_to: "{{ laps_dc_host }}"
+
+- name: Resolve the target container
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      TargetOu: "{{ laps_target_ou }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyString()][string]$TargetOu)
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      if ($TargetOu) { $TargetOu } else { (Get-ADDomain).ComputersContainer }
+  delegate_to: "{{ laps_dc_host }}"
+  register: laps_ou
+
+- name: Record the target container
+  ansible.builtin.set_fact:
+    laps_resolved_ou: "{{ laps_ou.output | first }}"
+
+- name: Allow managed computers to store their password
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      TargetOu: "{{ laps_resolved_ou }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$TargetOu)
+      Set-StrictMode -Version Latest
+      Import-Module LAPS
+      $Ansible.Changed = $false
+      $before = (Set-LapsADComputerSelfPermission -Identity $TargetOu | Out-String).Trim()
+      Write-Output $before
+  delegate_to: "{{ laps_dc_host }}"
+  changed_when: false
+
+- name: Delegate password read
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      TargetOu: "{{ laps_resolved_ou }}"
+      Principals: "{{ laps_read_principals }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$TargetOu,
+        [AllowEmptyCollection()][string[]]$Principals
+      )
+      Set-StrictMode -Version Latest
+      Import-Module LAPS
+      $Ansible.Changed = $false
+      foreach ($p in $Principals) {
+          Set-LapsADReadPasswordPermission -Identity $TargetOu -AllowedPrincipals $p | Out-String
+          Write-Output "granted msLAPS-Password read on $TargetOu to $p"
+      }
+  delegate_to: "{{ laps_dc_host }}"
+  when: laps_read_principals | length > 0
+  changed_when: false
+
+- name: Create the LAPS-managed local administrator
+  ansible.windows.win_user:
+    name: "{{ laps_managed_account }}"
+    password: "{{ lab_user_password }}"
+    password_never_expires: true
+    update_password: on_create
+    groups: [Administrators]
+    groups_action: add
+    state: present
+
+- name: Apply the LAPS policy
+  ansible.windows.win_regedit:
+    path: HKLM:\Software\Microsoft\Policies\LAPS
+    name: "{{ item.name }}"
+    data: "{{ item.data }}"
+    type: dword
+    state: present
+  loop:
+    # 2 = back the password up to Active Directory.
+    - { name: BackupDirectory, data: 2 }
+    - { name: PasswordAgeDays, data: "{{ laps_password_age_days }}" }
+    - { name: PasswordLength, data: "{{ laps_password_length }}" }
+    - { name: PasswordComplexity, data: "{{ laps_password_complexity }}" }
+    - { name: PostAuthenticationActions, data: "{{ laps_post_authentication_actions }}" }
+    - { name: PostAuthenticationResetDelay, data: "{{ laps_post_authentication_reset_delay_hours }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  register: laps_policy
+
+# Otherwise LAPS rotates the built-in Administrator and locks Ansible out.
+- name: Point LAPS at the managed account
+  ansible.windows.win_regedit:
+    path: HKLM:\Software\Microsoft\Policies\LAPS
+    name: AdministratorAccountName
+    data: "{{ laps_managed_account }}"
+    type: string
+    state: present
+  register: laps_policy_account
+
+- name: Check whether this host has stored a password
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Computer: "{{ inventory_hostname }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Computer)
+      Set-StrictMode -Version Latest
+      Import-Module LAPS
+      $Ansible.Changed = $false
+      $pw = Get-LapsADPassword -Identity $Computer -ErrorAction SilentlyContinue
+      if ($pw -and $pw.Account) { "stored:$($pw.Account)" } else { 'absent' }
+  delegate_to: "{{ laps_dc_host }}"
+  register: laps_stored
+
+- name: Process the LAPS policy now
+  ansible.windows.win_powershell:
+    error_action: continue
+    script: |
+      Set-StrictMode -Version Latest
+      Import-Module LAPS
+      Invoke-LapsPolicyProcessing | Out-String
+      $Ansible.Changed = $true
+  when: >-
+    laps_policy is changed
+    or laps_policy_account is changed
+    or 'stored:' + laps_managed_account not in (laps_stored.output | default([]))

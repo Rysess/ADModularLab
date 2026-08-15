@@ -1,0 +1,22 @@
+---
+# Domain -> the DC serving it. Keyed on domain rather than inventory order,
+# which is arbitrary once a lab holds several.
+dc_hosts_by_domain: >-
+  {{ dict(groups['role_dc'] | default([])
+          | map('extract', hostvars, 'domain_name')
+          | zip(groups['role_dc'] | default([])))
+     | combine(dict(groups['role_child_dc'] | default([])
+          | map('extract', hostvars, 'domain_child_domain')
+          | zip(groups['role_child_dc'] | default([])))) }}
+
+domain_dc_host: >-
+  {{ dc_hosts_by_domain.get(domain_name,
+       groups['role_dc'] | default([]) | first | default('')) }}
+
+dc_private_ip: "{{ hostvars[domain_dc_host].private_ip if domain_dc_host else '' }}"
+
+elastic_private_ip: "{{ groups['mod_edr_server'] | default([]) | map('extract', hostvars, 'private_ip') | first | default('') }}"
+
+domain_netbios: "{{ domain_name.split('.')[0] | upper }}"
+
+child_dc_user: svc_childdc

@@ -1,0 +1,23 @@
+client
+dev tun
+proto {{ vpn_proto }}
+remote {{ vpn_endpoint }} {{ vpn_port }}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher {{ vpn_cipher }}
+verb 3
+<ca>
+{{ vpn_ca_cert[vpn_ca_cert.find('-----BEGIN CERTIFICATE-----'):] | trim }}
+</ca>
+<cert>
+{{ vpn_client_cert[vpn_client_cert.find('-----BEGIN CERTIFICATE-----'):] | trim }}
+</cert>
+<key>
+{{ vpn_client_key | trim }}
+</key>
+<tls-crypt>
+{{ vpn_tls_crypt | trim }}
+</tls-crypt>

@@ -1,0 +1,126 @@
+---
+- name: Install the Certification Authority role
+  ansible.windows.win_feature:
+    name:
+      - ADCS-Cert-Authority
+      - RSAT-ADCS-Mgmt
+    include_management_tools: true
+    state: present
+  register: adcs_role
+
+- name: Reboot if the role install asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: adcs_role.reboot_required
+
+# No desired-state mode and throws if a CA exists, so guarded on Active.
+- name: Configure the enterprise root CA
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      CaName: "{{ adcs_ca_common_name }}"
+      CaType: "{{ adcs_ca_type }}"
+      KeyLength: "{{ adcs_key_length }}"
+      HashAlgorithm: "{{ adcs_hash_algorithm }}"
+      ValidityYears: "{{ adcs_validity_years }}"
+      User: "{{ adcs_install_user }}"
+      Password: "{{ adcs_install_password }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$CaName,
+        [Parameter(Mandatory)][string]$CaType,
+        [Parameter(Mandatory)][int]$KeyLength,
+        [Parameter(Mandatory)][string]$HashAlgorithm,
+        [Parameter(Mandatory)][int]$ValidityYears,
+        [Parameter(Mandatory)][string]$User,
+        [Parameter(Mandatory)][string]$Password
+      )
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      Import-Module ADCSDeployment
+
+      $cfg = 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+      $active = Get-ItemPropertyValue -Path $cfg -Name Active -ErrorAction SilentlyContinue
+      if ($active) {
+          Write-Output "CA already configured: $active"
+          return
+      }
+
+      $cred = New-Object System.Management.Automation.PSCredential(
+          $User, (ConvertTo-SecureString $Password -AsPlainText -Force))
+
+      $res = Install-AdcsCertificationAuthority `
+          -CAType $CaType `
+          -CACommonName $CaName `
+          -KeyLength $KeyLength `
+          -HashAlgorithmName $HashAlgorithm `
+          -ValidityPeriod Years -ValidityPeriodUnits $ValidityYears `
+          -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
+          -Credential $cred -Force
+
+      Write-Output "ErrorId: $($res.ErrorId) $($res.ErrorString)"
+      if ($res.ErrorId -ne 0) { $Ansible.Failed = $true; return }
+      $Ansible.Changed = $true
+  register: adcs_ca
+  no_log: true
+
+- name: Report the CA configuration
+  ansible.builtin.debug:
+    var: adcs_ca.output
+
+- name: Ensure the CA service is running
+  ansible.windows.win_service:
+    name: CertSvc
+    state: started
+    start_mode: auto
+
+- name: Wait for the CA to answer
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      CaName: "{{ adcs_ca_common_name }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$CaName)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      & certutil -ping -config "$env:COMPUTERNAME\$CaName" | Out-String
+      if ($LASTEXITCODE -ne 0) { $Ansible.Failed = $true }
+  register: adcs_ping
+  until: adcs_ping is succeeded
+  retries: 10
+  delay: 15
+
+- name: ESC1 - requester-supplied subject on a client authentication template
+  ansible.builtin.include_tasks:
+    file: esc1.yml
+    apply:
+      tags: [adcs, esc1]
+  when: adcs_esc1 | bool
+  tags: [adcs, esc1]
+
+- name: ESC4 - writable certificate template
+  ansible.builtin.include_tasks:
+    file: esc4.yml
+    apply:
+      tags: [adcs, esc4]
+  when: adcs_esc4 | bool
+  tags: [adcs, esc4]
+
+- name: ESC8 - web enrollment over HTTP
+  ansible.builtin.include_tasks:
+    file: esc8.yml
+    apply:
+      tags: [adcs, esc8]
+  when: adcs_esc8 | bool
+  tags: [adcs, esc8]
+
+- name: ESC11 - unencrypted ICertRequest interface
+  ansible.builtin.include_tasks:
+    file: esc11.yml
+    apply:
+      tags: [adcs, esc11]
+  when: adcs_esc11 | bool
+  tags: [adcs, esc11]

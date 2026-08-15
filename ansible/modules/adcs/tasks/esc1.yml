@@ -1,0 +1,73 @@
+---
+# Client auth EKU + enrollee_supplies_subject + no manager approval.
+- name: Create the ESC1 template
+  microsoft.ad.cs_template:
+    name: "{{ adcs_esc1_template }}"
+    display_name: "{{ adcs_esc1_display_name }}"
+    source_template: User
+    schema_version: 2
+    key_size: 2048
+    extended_key_usages:
+      - client_authentication
+    certificate_name_flag:
+      - enrollee_supplies_subject
+    enrollment_flag:
+      - publish_to_ds
+    private_key_flag:
+      - exportable_key
+    validity_period_days: 365
+    renewal_period_days: 42
+    publish_to_ca:
+      - "{{ adcs_ca_common_name }}"
+    state: present
+  delegate_to: "{{ adcs_dc_host }}"
+
+- name: Grant enrollment on the ESC1 template
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Template: "{{ adcs_esc1_template }}"
+      Principals: "{{ adcs_esc1_enrollees }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Template,
+        [Parameter(Mandatory)][string[]]$Principals
+      )
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+
+      # Certificate-Enrollment extended right
+      $enroll = [guid]'0e10c968-78fb-11d2-90d4-00c04f79dc55'
+
+      $cfg = (Get-ADRootDSE).configurationNamingContext
+      $path = "AD:\CN=$Template,CN=Certificate Templates,CN=Public Key Services,CN=Services,$cfg"
+      $acl = Get-Acl -Path $path
+      $dirty = $false
+
+      foreach ($p in $Principals) {
+          $obj = Get-ADObject -LDAPFilter "(sAMAccountName=$p)" -Properties objectSid
+          if (-not $obj) { throw "No object with sAMAccountName '$p'" }
+          $sid = $obj.objectSid
+
+          $existing = $acl.Access | Where-Object {
+              $_.AccessControlType -eq 'Allow' -and
+              $_.ObjectType -eq $enroll -and
+              $_.IdentityReference.Translate(
+                  [System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value
+          }
+          if ($existing) { continue }
+
+          $acl.AddAccessRule(
+              (New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                  $sid, 'ExtendedRight', 'Allow', $enroll)))
+          Write-Output "granted Enroll on $Template to $p"
+          $dirty = $true
+      }
+
+      if ($dirty) {
+          Set-Acl -Path $path -AclObject $acl
+          $Ansible.Changed = $true
+      }
+  delegate_to: "{{ adcs_dc_host }}"

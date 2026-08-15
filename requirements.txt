@@ -1,2 +1,5 @@
-ansible
-pywinrm
+ansible-core>=2.17,<2.19
+pywinrm>=0.4.3,<0.6
+boto3>=1.34,<2.0
+botocore>=1.34,<2.0
+PyYAML>=6.0,<7.0

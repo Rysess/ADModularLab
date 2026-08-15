@@ -1,0 +1,18 @@
+---
+edr_server_dir: /opt/elastic-container
+edr_server_agent_dir: /var/www/html/elastic-agent
+
+# Third-party; pin to a commit or tag for reproducibility.
+edr_server_repo: https://github.com/peasead/elastic-container.git
+edr_server_repo_version: main
+
+edr_server_probe_container: ecp-elasticsearch
+
+edr_server_wait_retries: 30
+edr_server_wait_delay: 20
+
+edr_server_rule_query: >-
+  alert.attributes.tags:("OS: Windows" OR "Data Source: Active Directory")
+
+edr_server_monitor_role: version_reader
+edr_server_monitor_user: monitor

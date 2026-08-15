@@ -1,0 +1,6 @@
+---
+domain_member_dc_wait_timeout: 1800
+domain_member_locator_retries: 20
+domain_member_locator_delay: 15
+domain_member_join_retries: 5
+domain_member_join_delay: 30
