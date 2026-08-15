@@ -1,0 +1,47 @@
+---
+# Dispatcher. Each scenario lives in its own file, is off by default, and
+# carries a tag of its own so it can be applied to a live lab in isolation.
+- name: Ensure the ActiveDirectory PowerShell module is present
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+
+- name: Kerberoastable service accounts
+  ansible.builtin.include_tasks:
+    file: kerberoast.yml
+    apply:
+      tags: [vulns, kerberoast]
+  when: vulns_kerberoast | bool
+  tags: [vulns, kerberoast]
+
+- name: AS-REP roastable accounts
+  ansible.builtin.include_tasks:
+    file: asreproast.yml
+    apply:
+      tags: [vulns, asreproast]
+  when: vulns_asreproast | bool
+  tags: [vulns, asreproast]
+
+- name: Unconstrained delegation
+  ansible.builtin.include_tasks:
+    file: unconstrained_delegation.yml
+    apply:
+      tags: [vulns, unconstrained_delegation]
+  when: vulns_unconstrained_delegation | bool
+  tags: [vulns, unconstrained_delegation]
+
+- name: Resource-based constrained delegation
+  ansible.builtin.include_tasks:
+    file: rbcd.yml
+    apply:
+      tags: [vulns, rbcd]
+  when: vulns_rbcd | bool
+  tags: [vulns, rbcd]
+
+- name: DCSync rights
+  ansible.builtin.include_tasks:
+    file: dcsync.yml
+    apply:
+      tags: [vulns, dcsync]
+  when: vulns_dcsync | bool
+  tags: [vulns, dcsync]

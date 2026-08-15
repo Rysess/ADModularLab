@@ -1,0 +1,52 @@
+---
+# No native module for directory ACLs, so the domain's nTSecurityDescriptor is
+# edited directly: read, add only missing ACEs, write once.
+- name: Grant replication rights on the domain naming context
+  ansible.windows.win_powershell:
+    parameters:
+      Principals: "{{ vulns_dcsync_principals }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string[]]$Principals)
+      $ErrorActionPreference = 'Stop'
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+
+      # DS-Replication-Get-Changes / -All
+      $rights = @(
+          [guid]'1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+          [guid]'1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
+      )
+
+      $path = "AD:\" + (Get-ADDomain).DistinguishedName
+      $acl = Get-Acl -Path $path
+      $dirty = $false
+
+      foreach ($p in $Principals) {
+          $sid = (Get-ADObject -Filter "sAMAccountName -eq '$p'" -Properties objectSid).objectSid
+          if (-not $sid) { throw "No object with sAMAccountName '$p'" }
+
+          foreach ($right in $rights) {
+              $present = $acl.Access | Where-Object {
+                  $_.AccessControlType -eq 'Allow' -and
+                  $_.ObjectType -eq $right -and
+                  $_.ActiveDirectoryRights.HasFlag(
+                      [System.DirectoryServices.ActiveDirectoryRights]::ExtendedRight) -and
+                  $_.IdentityReference.Translate(
+                      [System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value
+              }
+              if ($present) { continue }
+
+              $acl.AddAccessRule(
+                  (New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                      $sid, 'ExtendedRight', 'Allow', $right)))
+              Write-Output "granted $right to $p"
+              $dirty = $true
+          }
+      }
+
+      if ($dirty) {
+          Set-Acl -Path $path -AclObject $acl
+          $Ansible.Changed = $true
+      }

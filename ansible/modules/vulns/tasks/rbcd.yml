@@ -1,0 +1,11 @@
+---
+# msDS-AllowedToActOnBehalfOfOtherIdentity on the target computer.
+- name: Allow the listed principals to act on behalf of others
+  microsoft.ad.computer:
+    identity: "{{ item.computer }}$"
+    delegates:
+      set: "{{ item.allowed }}"
+    state: present
+  loop: "{{ vulns_rbcd_grants }}"
+  loop_control:
+    label: "{{ item.computer }}$ <- {{ item.allowed | join(', ') }}"

@@ -1,2 +1,4 @@
 os: windows
 min_instance_type: t3.small
+requires_lab:
+  - edr_server

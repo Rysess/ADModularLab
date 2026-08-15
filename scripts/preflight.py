@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
-"""Validate lab.yml against each role's lab_meta.yml (os + min_instance_type)."""
-import os, sys, yaml
+"""Validate a lab definition against the roles and modules it references.
+
+Run by ./run.sh before Terraform touches anything. Everything checked here is
+something Terraform or Ansible would otherwise only discover 20 minutes into a
+deployment.
+"""
+import ipaddress
+import os
+import re
+import sys
+
+import yaml
 
 MEM = {
     "t3.nano": 0.5, "t3.micro": 1, "t3.small": 2, "t3.medium": 4,
@@ -10,50 +20,313 @@ MEM = {
     "t2.nano": 0.5, "t2.micro": 1, "t2.small": 2, "t2.medium": 4,
     "t2.large": 8, "t2.xlarge": 16,
     "m5.large": 8, "m5.xlarge": 16, "m5.2xlarge": 32,
-    "m6i.large": 8, "m6i.xlarge": 16, "c5.large": 4, "c5.xlarge": 8,
+    "m6i.large": 8, "m6i.xlarge": 16, "m6i.2xlarge": 32,
+    "m6a.large": 8, "m6a.xlarge": 16, "m6a.2xlarge": 32,
+    "c5.large": 4, "c5.xlarge": 8, "c6i.large": 4, "c6i.xlarge": 8,
+    "r5.large": 16, "r6i.large": 16,
 }
-ROLE_DIR = {"dc": "dc", "member": "domain_member", "standalone": None}
+ROLE_DIR = {"dc": "dc", "member": "domain_member",
+            "child_dc": "domain_child", "standalone": None}
+VALID_OS = {"windows", "linux"}
+VALID_PROTO = {"tcp", "udp"}
+WINDOWS_VERSIONS = {"2016", "2019", "2022", "2025"}
+
+SUBNET = ipaddress.ip_network("10.0.1.0/24")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,14}$")
+LAB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+DOMAIN_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
+                       r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$")
+REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
+AMI_RE = re.compile(r"^ami-[0-9a-f]{8,17}$")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ROLE_DIRS = [os.path.join(ROOT, "ansible", "roles"),
              os.path.join(ROOT, "ansible", "modules")]
 
-def meta(role):
+
+def meta(name):
+    """Load a role or module's lab_meta.yml, or {} if it declares none."""
     for d in ROLE_DIRS:
-        p = os.path.join(d, role, "lab_meta.yml")
+        p = os.path.join(d, name, "lab_meta.yml")
         if os.path.isfile(p):
-            return yaml.safe_load(open(p)) or {}
+            with open(p, encoding="utf-8") as fh:
+                return yaml.safe_load(fh) or {}
     return {}
 
+
+def known(name):
+    return any(os.path.isdir(os.path.join(d, name)) for d in ROLE_DIRS)
+
+
+def module_names(host, problems):
+    """A modules entry is either a bare name or {name: <n>, vars: {...}}."""
+    names = []
+    for entry in host.get("modules") or []:
+        if isinstance(entry, str):
+            names.append(entry)
+        elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            extra = set(entry) - {"name", "vars"}
+            if extra:
+                problems.append(f"{host.get('name')}: module {entry['name']!r} has "
+                                f"unknown keys {sorted(extra)}; expected 'name' and 'vars'")
+            if "vars" in entry and not isinstance(entry["vars"], dict):
+                problems.append(f"{host.get('name')}: module {entry['name']!r} "
+                                f"'vars' must be a mapping")
+            names.append(entry["name"])
+        else:
+            problems.append(f"{host.get('name')}: module entry {entry!r} must be a name "
+                            f"or a mapping with a 'name' key")
+    return names
+
+
+def check_lab(lab, problems):
+    name = lab.get("name", "")
+    if not LAB_NAME_RE.match(str(name)):
+        problems.append(f"lab.name {name!r}: 1-64 chars, alphanumeric plus '.', '_' and '-' "
+                        f"(it becomes the EC2 tag the inventory filters on)")
+    if not REGION_RE.match(str(lab.get("region", ""))):
+        problems.append(f"lab.region {lab.get('region')!r} is not an AWS region id")
+
+    domain = str(lab.get("domain", ""))
+    if not DOMAIN_RE.match(domain):
+        problems.append(f"lab.domain {domain!r} must be a dotted DNS name, e.g. lab.local")
+    elif len(domain.split(".")[0]) > 15:
+        problems.append(f"lab.domain {domain!r}: the first label becomes the NetBIOS name "
+                        f"and must be 15 characters or fewer")
+
+    admin = str(lab.get("domain_admin", ""))
+    if not admin:
+        problems.append("lab.domain_admin is required")
+    elif len(admin) > 20:
+        problems.append(f"lab.domain_admin {admin!r} exceeds the 20-character "
+                        f"sAMAccountName limit")
+
+    hours = lab.get("expires_hours", 168)
+    if not isinstance(hours, int) or hours <= 0:
+        problems.append(f"lab.expires_hours {hours!r} must be a positive integer")
+
+
+def check_defaults(defaults, problems):
+    win = str(defaults.get("windows_version", "2022"))
+    if win not in WINDOWS_VERSIONS:
+        problems.append(f"defaults.windows_version {win!r} must be one of "
+                        f"{sorted(WINDOWS_VERSIONS)}")
+    ubuntu = str(defaults.get("ubuntu_release", "22.04"))
+    if not re.match(r"^\d{2}\.\d{2}$", ubuntu):
+        problems.append(f"defaults.ubuntu_release {ubuntu!r} must look like 22.04")
+
+
+def check_expose_ports(host, problems):
+    name = host.get("name")
+    for entry in host.get("expose_ports") or []:
+        if not isinstance(entry, dict):
+            problems.append(f"{name}: expose_ports entry {entry!r} must be a mapping "
+                            f"with 'port' and 'proto'")
+            continue
+        port = entry.get("port")
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            problems.append(f"{name}: expose_ports port {port!r} must be 1-65535")
+        proto = entry.get("proto")
+        if proto not in VALID_PROTO:
+            problems.append(f"{name}: expose_ports proto {proto!r} must be one of "
+                            f"{sorted(VALID_PROTO)}")
+
+
+def check_private_ip(host, seen_ips, problems):
+    name = host.get("name")
+    ip = host.get("private_ip")
+    if not ip:
+        return
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        problems.append(f"{name}: private_ip {ip!r} is not a valid address")
+        return
+    if addr not in SUBNET:
+        problems.append(f"{name}: private_ip {ip} is outside {SUBNET}")
+    elif int(addr) - int(SUBNET.network_address) < 4 or addr == SUBNET.broadcast_address:
+        problems.append(f"{name}: private_ip {ip} is reserved by AWS")
+    if ip in seen_ips:
+        problems.append(f"{name}: private_ip {ip} already used by {seen_ips[ip]}")
+    seen_ips[ip] = name
+
+
+def host_domain(host, lab):
+    """The domain a host belongs to: its own override, else the lab's."""
+    return str((host.get("vars") or {}).get("domain_name", lab.get("domain", "")))
+
+
+def child_domain(host, lab):
+    """The domain a child_dc host serves."""
+    return str((host.get("vars") or {}).get(
+        "domain_child_domain", f"child.{host_domain(host, lab)}"))
+
+
+def check_domains(hosts, lab, problems):
+    """Every host must belong to a domain some controller in the lab serves."""
+    root_domains, all_domains = set(), set()
+    for h in hosts:
+        role = h.get("role", "standalone")
+        if role == "dc":
+            root_domains.add(host_domain(h, lab))
+        elif role == "child_dc":
+            all_domains.add(child_domain(h, lab))
+    all_domains |= root_domains
+    multi = len(all_domains) > 1
+
+    for h in hosts:
+        name, role = h.get("name"), h.get("role", "standalone")
+        declared = (h.get("vars") or {}).get("domain_name")
+
+        # One domain: optional. Two or more: every host must say which.
+        if multi and role in ROLE_DIR and role != "standalone" and not declared:
+            problems.append(
+                f"{name}: the lab has {len(all_domains)} domains "
+                f"({', '.join(sorted(all_domains))}), so this host must declare "
+                f"vars.domain_name; it would otherwise default to {lab.get('domain')!r}")
+
+        if role == "member":
+            if host_domain(h, lab) not in all_domains:
+                problems.append(
+                    f"{name}: joins {host_domain(h, lab)!r}, which no domain controller "
+                    f"in the lab serves. Known domains: {sorted(all_domains)}")
+        elif role == "child_dc":
+            if host_domain(h, lab) not in root_domains:
+                problems.append(
+                    f"{name}: is a child of {host_domain(h, lab)!r}, which no host with "
+                    f"role=dc serves. Known: {sorted(root_domains)}")
+            if child_domain(h, lab) in root_domains:
+                problems.append(
+                    f"{name}: child domain {child_domain(h, lab)!r} collides with a "
+                    f"forest root of the same name")
+        elif role == "dc" and declared and declared in all_domains - {declared}:
+            problems.append(f"{name}: domain {declared!r} is served by more than one host")
+
+    seen = {}
+    for h in hosts:
+        if h.get("role") == "dc":
+            d = host_domain(h, lab)
+            if d in seen:
+                problems.append(f"{h.get('name')}: domain {d!r} already served by {seen[d]}; "
+                                f"give one of them a different domain_name")
+            seen[d] = h.get("name")
+
+
+def check_requirements(host, role, roles, itype, lab_roles, lab_modules, problems, warns):
+    """Check each applied role/module against its lab_meta.yml declaration."""
+    name = host.get("name")
+    host_os = host.get("os")
+
+    for r in roles:
+        m = meta(r)
+
+        req_os = m.get("os", "any")
+        if req_os != "any" and req_os != host_os:
+            problems.append(f"{name}: role '{r}' requires os={req_os}, host is {host_os}")
+
+        req_role = m.get("requires_role")
+        if req_role and role != req_role:
+            problems.append(f"{name}: '{r}' must run on a host with role={req_role}, "
+                            f"host is {role}")
+
+        req_lab_role = m.get("requires_lab_role")
+        if req_lab_role and req_lab_role not in lab_roles:
+            problems.append(f"{name}: '{r}' needs a host with role={req_lab_role} in the lab")
+
+        for dep in m.get("requires_lab", []):
+            if dep not in lab_modules:
+                problems.append(f"{name}: '{r}' needs module '{dep}' somewhere in the lab")
+
+        mint = m.get("min_instance_type")
+        if mint:
+            hr, mr = MEM.get(itype), MEM.get(mint)
+            if hr is None:
+                warns.append(f"{name}: unknown instance_type '{itype}', "
+                             f"cannot verify '{r}' needs >= {mint}")
+            elif mr is not None and hr < mr:
+                problems.append(f"{name}: role '{r}' needs >= {mint}, host is {itype}")
+
+
 def main():
-    lab = yaml.safe_load(open(os.path.join(ROOT, "lab.yml")))
-    defaults = lab.get("defaults", {})
+    lab_file = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "lab.yml")
+    with open(lab_file, encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+
+    lab = cfg.get("lab") or {}
+    defaults = cfg.get("defaults") or {}
+    hosts = cfg.get("hosts") or []
     problems, warns = [], []
 
-    for h in lab["hosts"]:
-        os_ = h["os"]
-        itype = h.get("instance_type") or defaults.get(f"{os_}_instance_type")
+    if not hosts:
+        print("Preflight FAILED:\n  - no hosts declared")
+        sys.exit(1)
+
+    check_lab(lab, problems)
+    check_defaults(defaults, problems)
+    check_domains(hosts, lab, problems)
+
+    seen_names, seen_ips = set(), {}
+    lab_roles = {h.get("role", "standalone") for h in hosts}
+    host_modules = {}
+    for h in hosts:
+        host_modules[id(h)] = module_names(h, problems)
+    lab_modules = {m for mods in host_modules.values() for m in mods}
+
+    for h in hosts:
+        name = h.get("name", "")
+        if not NAME_RE.match(str(name)):
+            problems.append(f"{name!r}: invalid host name (1-15 chars, alphanumeric and '-')")
+        if name in seen_names:
+            problems.append(f"{name}: duplicate host name")
+        seen_names.add(name)
+
+        host_os = h.get("os")
+        if host_os not in VALID_OS:
+            problems.append(f"{name}: os must be one of {sorted(VALID_OS)}, got {host_os!r}")
+            continue
+
+        role = h.get("role", "standalone")
+        if role not in ROLE_DIR:
+            problems.append(f"{name}: unknown role {role!r}")
+
+        ami = h.get("ami")
+        if ami is not None and not AMI_RE.match(str(ami)):
+            problems.append(f"{name}: ami {ami!r} is not an AMI id (ami-...)")
+
+        host_vars = h.get("vars")
+        if host_vars is not None and not isinstance(host_vars, dict):
+            problems.append(f"{name}: 'vars' must be a mapping")
+
+        disk = h.get("disk_gb")
+        if disk is not None and (not isinstance(disk, int) or disk < 8):
+            problems.append(f"{name}: disk_gb {disk!r} must be an integer of at least 8")
+
+        check_private_ip(h, seen_ips, problems)
+        check_expose_ports(h, problems)
+
+        mods = host_modules[id(h)]
+        dupes = {m for m in mods if mods.count(m) > 1}
+        if dupes:
+            problems.append(f"{name}: module(s) {sorted(dupes)} listed more than once")
+
+        # EC2 drops forwarded traffic unless the source/dest check is off.
+        if "vpn" in mods and h.get("source_dest_check", True):
+            problems.append(f"{name}: runs the vpn module, so it needs "
+                            f"source_dest_check: false")
+
+        itype = h.get("instance_type") or defaults.get(f"{host_os}_instance_type")
         roles = []
-        rd = ROLE_DIR.get(h.get("role"))
+        rd = ROLE_DIR.get(role)
         if rd:
             roles.append(rd)
-        roles += h.get("modules", [])
+        for m in mods:
+            if not known(m):
+                problems.append(f"{name}: unknown module {m!r}")
+            else:
+                roles.append(m)
 
-        for r in roles:
-            m = meta(r)
-            req_os = m.get("os", "any")
-            if req_os != "any" and req_os != os_:
-                problems.append(f"{h['name']}: role '{r}' requires os={req_os}, host is {os_}")
-            mint = m.get("min_instance_type")
-            if mint:
-                hr, mr = MEM.get(itype), MEM.get(mint)
-                if hr is None:
-                    warns.append(f"{h['name']}: unknown instance_type '{itype}', "
-                                 f"cannot verify '{r}' needs >= {mint}")
-                elif mr is not None and hr < mr:
-                    problems.append(f"{h['name']}: role '{r}' needs >= {mint}, "
-                                    f"host is {itype}")
+        check_requirements(h, role, roles, itype, lab_roles, lab_modules, problems, warns)
 
     for w in warns:
         print(f"[warn] {w}")
@@ -61,9 +334,10 @@ def main():
         print("\nPreflight FAILED:")
         for p in problems:
             print(f"  - {p}")
-        print("\nFix lab.yml, or bypass with:  ./deploy.sh --force   (or SKIP_PREFLIGHT=1)")
+        print("\nFix the lab file, or bypass with:  ./run.sh --force   (or SKIP_PREFLIGHT=1)")
         sys.exit(1)
-    print("[preflight] OK — every host satisfies its roles' os/size requirements")
+    print("[preflight] OK - every host satisfies its roles' requirements")
+
 
 if __name__ == "__main__":
     main()

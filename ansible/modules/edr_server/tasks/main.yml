@@ -1,209 +1,232 @@
 ---
 - name: Guard - edr_server is Linux only
-  assert:
+  ansible.builtin.assert:
     that: ansible_system == 'Linux'
     fail_msg: "edr_server runs on Linux only (Elastic stack via Docker). Check lab.yml."
-    quiet: yes
+    quiet: true
 
 - name: Wait for cloud-init
-  wait_for:
+  ansible.builtin.wait_for:
     path: /var/lib/cloud/instance/boot-finished
     timeout: 600
 
-- name: Install Docker prerequisites
-  apt:
+- name: Install the Docker repository prerequisites
+  ansible.builtin.apt:
     name: [apt-transport-https, ca-certificates, curl, gnupg, lsb-release]
     state: present
-    update_cache: yes
+    update_cache: true
 
-- name: Add Docker GPG key
-  apt_key:
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Add the Docker signing key
+  ansible.builtin.get_url:
     url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+
+- name: Add the Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    filename: docker
     state: present
 
-- name: Add Docker repo
-  apt_repository:
-    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+- name: Install Docker, the compose plugin, nginx and jq
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - jq
+      - nginx
     state: present
-
-- name: Install Docker + Compose + jq
-  apt:
-    name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin, jq]
-    state: present
-    update_cache: yes
+    update_cache: true
 
 - name: Start Docker
-  service: { name: docker, state: started, enabled: yes }
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
 
-- name: Add ubuntu to docker group
-  user: { name: ubuntu, groups: docker, append: yes }
+- name: Let the ubuntu user talk to Docker
+  ansible.builtin.user:
+    name: ubuntu
+    groups: docker
+    append: true
 
-- name: Clone elastic-container
-  git:
-    repo: https://github.com/peasead/elastic-container.git
-    dest: /opt/elastic-container
-    version: main
+# update: false — the password substituted into the tracked .env below dirties
+# the tree and a pull would refuse. Remove the directory to move the pin.
+- name: Clone the elastic-container stack definition
+  ansible.builtin.git:
+    repo: "{{ edr_server_repo }}"
+    dest: "{{ edr_server_dir }}"
+    version: "{{ edr_server_repo_version }}"
+    update: false
 
-- name: Create .env
-  shell: "cd /opt/elastic-container && [ -f .env ] || cp .env.spec .env"
+- name: Check for the stack environment file
+  ansible.builtin.stat:
+    path: "{{ edr_server_dir }}/.env"
+  register: edr_server_env
 
-- name: Set password in .env
-  replace:
-    path: /opt/elastic-container/.env
-    regexp: "changeme"
-    replace: "{{ admin_password }}"
+# Older checkouts shipped only .env.spec.
+- name: Seed .env from .env.spec
+  ansible.builtin.copy:
+    src: "{{ edr_server_dir }}/.env.spec"
+    dest: "{{ edr_server_dir }}/.env"
+    remote_src: true
+    mode: "0600"
+  when: not edr_server_env.stat.exists
 
-- name: Start Elastic Stack
-  shell: "cd /opt/elastic-container && sudo ./elastic-container.sh start"
+- name: Restrict the stack environment file
+  ansible.builtin.file:
+    path: "{{ edr_server_dir }}/.env"
+    mode: "0600"
+
+- name: Set the Elastic password in .env
+  ansible.builtin.replace:
+    path: "{{ edr_server_dir }}/.env"
+    regexp: changeme
+    replace: "{{ elastic_password }}"
+  no_log: true
+
+- name: Check whether the stack is already up
+  ansible.builtin.command:
+    cmd: docker ps --quiet --filter name={{ edr_server_probe_container }} --filter status=running
+  register: edr_server_running
+  changed_when: false
+
+- name: Start the Elastic stack
+  ansible.builtin.command:
+    cmd: ./elastic-container.sh start
+    chdir: "{{ edr_server_dir }}"
+  when: edr_server_running.stdout | trim | length == 0
+  changed_when: true
 
 - name: Wait for Elasticsearch
-  uri:
+  ansible.builtin.uri:
     url: https://localhost:9200
     user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    return_content: true
     status_code: 200
-  register: es
-  until: es.status == 200
-  retries: 30
-  delay: 20
+  register: edr_server_es
+  until: edr_server_es.status == 200
+  retries: "{{ edr_server_wait_retries }}"
+  delay: "{{ edr_server_wait_delay }}"
 
-- name: Get ES version
-  uri:
-    url: https://localhost:9200
-    user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
-    return_content: yes
-  register: es_ver
+- name: Record the Elasticsearch version
+  ansible.builtin.set_fact:
+    elastic_version: "{{ edr_server_es.json.version.number }}"
 
-- set_fact:
-    elastic_version: "{{ es_ver.json.version.number }}"
-
-- name: Install nginx
-  apt: { name: nginx, state: present, update_cache: yes }
-
-- name: Agent download dir
-  file:
-    path: /var/www/html/elastic-agent
+- name: Create the agent download directory
+  ansible.builtin.file:
+    path: "{{ edr_server_agent_dir }}"
     state: directory
     owner: www-data
     group: www-data
     mode: "0755"
 
-- name: Publish Windows Elastic Agent
-  get_url:
-    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-windows-x86_64.zip"
-    dest: /var/www/html/elastic-agent/elastic-agent-win.zip
+# Served locally so the agent version matches the running stack.
+- name: Publish the matching Windows Elastic Agent
+  ansible.builtin.get_url:
+    url: >-
+      https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-windows-x86_64.zip
+    dest: "{{ edr_server_agent_dir }}/elastic-agent-win.zip"
     mode: "0644"
 
-- name: Ensure nginx running
-  service: { name: nginx, state: started, enabled: yes }
+- name: Ensure nginx is running
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
 
 - name: Wait for Kibana
-  uri:
+  ansible.builtin.uri:
     url: https://localhost:5601/api/status
     user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
     status_code: 200
-  register: kibana
-  until: kibana.status == 200
-  retries: 30
-  delay: 20
+  register: edr_server_kibana
+  until: edr_server_kibana.status == 200
+  retries: "{{ edr_server_wait_retries }}"
+  delay: "{{ edr_server_wait_delay }}"
 
-- name: Activate trial license
-  uri:
+# Advisory: a lab without detection rules is still usable.
+- name: Activate the trial licence
+  ansible.builtin.uri:
     url: https://localhost:9200/_license/start_trial?acknowledge=true
     method: POST
     user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
-    status_code: [200, 201]
-  ignore_errors: yes
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: [200, 201, 403]
+  register: edr_server_trial
+  failed_when: false
+  changed_when: edr_server_trial.status in [200, 201]
 
-- name: Enable Windows / AD detection rules
-  uri:
+- name: Enable the Windows and Active Directory detection rules
+  ansible.builtin.uri:
     url: https://localhost:5601/api/detection_engine/rules/_bulk_action
     method: POST
     user: elastic
-    password: "{{ admin_password }}"
-    force_basic_auth: yes
-    validate_certs: no
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
     timeout: 120
     headers:
       kbn-xsrf: "true"
-      Content-Type: "application/json"
+      Content-Type: application/json
     body_format: json
     body:
-      query: 'alert.attributes.tags:("OS: Windows" OR "Data Source: Active Directory")'
+      query: "{{ edr_server_rule_query }}"
       action: enable
     status_code: [200, 201]
-  ignore_errors: yes
+  register: edr_server_rules
+  failed_when: false
+  # Returns 200 whether or not anything changed.
+  changed_when: false
 
-- name: Get Fleet enrollment token
-  uri:
-    url: https://localhost:5601/api/fleet/enrollment_api_keys
-    method: GET
-    force_basic_auth: yes
-    user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
-    headers:
-      kbn-xsrf: "true"
-    return_content: yes
-  register: fleet_keys
-
-- name: Extract default Fleet token
-  set_fact:
-    fleet_token: >-
-      {{ fleet_keys.json.list
-         | selectattr('name', 'search', 'Default')
-         | map(attribute='api_key')
-         | first }}
-
-- name: Publish Fleet token to all hosts
-  set_fact:
-    global_fleet_token: "{{ fleet_token }}"
-  delegate_to: localhost
-  delegate_facts: true
-  run_once: true
-
-- name: Create Elasticsearch monitor role
-  uri:
-    url: https://localhost:9200/_security/role/version_reader
+- name: Create the read-only monitor role
+  ansible.builtin.uri:
+    url: "https://localhost:9200/_security/role/{{ edr_server_monitor_role }}"
     method: POST
     user: elastic
-    force_basic_auth: yes
-    password: "{{ admin_password }}"
-    validate_certs: no
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
     headers:
-      Content-Type: "application/json"
+      Content-Type: application/json
     body_format: json
     body:
-      cluster: ["monitor"]
+      cluster: [monitor]
       indices: []
     status_code: [200, 201]
 
-- name: Create monitor user
-  uri:
-    url: https://localhost:9200/_security/user/monitor
+- name: Create the monitor user
+  ansible.builtin.uri:
+    url: "https://localhost:9200/_security/user/{{ edr_server_monitor_user }}"
     method: POST
-    force_basic_auth: yes
     user: elastic
-    password: "{{ admin_password }}"
-    validate_certs: no
+    password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
     headers:
-      Content-Type: "application/json"
+      Content-Type: application/json
     body_format: json
     body:
       password: "{{ monitor_password }}"
-      roles: ["version_reader"]
-      full_name: "Agent Version Checker"
-      email: "admin@example.com"
+      roles: ["{{ edr_server_monitor_role }}"]
+      full_name: Agent Version Checker
     status_code: [200, 201]
-
-- name: Clean up temp artifacts
-  file:
-    path: /tmp/elastic-agent-win.zip
-    state: absent
+  no_log: true

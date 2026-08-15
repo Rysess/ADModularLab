@@ -1,0 +1,29 @@
+---
+vulns_kerberoast: false
+vulns_asreproast: false
+vulns_unconstrained_delegation: false
+vulns_rbcd: false
+vulns_dcsync: false
+
+vulns_kerberoast_accounts:
+  - sam: svc_mssql
+    display: SQL Service
+    password: Summer2025!
+    spn: MSSQLSvc/sqlprod.{{ domain_name }}:1433
+  - sam: svc_web
+    display: Web Service
+    password: Company123
+    spn: HTTP/intranet.{{ domain_name }}
+
+# Created by the dc role.
+vulns_asreproast_users:
+  - LabUser3
+  - LabUser7
+
+# NetBIOS host names; the trailing $ is added.
+vulns_unconstrained_delegation_computers: []
+
+# { computer, allowed: [principal, ...] }
+vulns_rbcd_grants: []
+
+vulns_dcsync_principals: []

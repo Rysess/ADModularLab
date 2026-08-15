@@ -1,0 +1,82 @@
+---
+# Three domains: lab.local with child.lab.local beneath it, and a separate
+# partner.local joined by a bidirectional forest trust. About $0.31/hour.
+#
+#   LAB_FILE=examples/trusts.yml ./run.sh
+#
+# More than one domain, so every domain-bearing host declares which it is in.
+# Credentials are shared across all of them.
+
+lab:
+  name: trusts-lab
+  region: eu-west-3
+  domain: lab.local
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 24
+
+defaults:
+  windows_instance_type: t3.medium
+  linux_instance_type: t3.nano
+  windows_disk_gb: 50
+  linux_disk_gb: 8
+  windows_version: "2022"
+  ubuntu_release: "22.04"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    private_ip: 10.0.1.10
+    vars:
+      domain_name: lab.local
+    modules:
+      - name: trust
+        vars:
+          trust_partners:
+            - name: partner.local
+              type: forest
+              direction: bidirectional
+
+  - name: dc02
+    os: windows
+    role: dc
+    private_ip: 10.0.1.20
+    vars:
+      domain_name: partner.local
+    modules:
+      - name: trust
+        vars:
+          trust_partners:
+            - name: lab.local
+              type: forest
+              direction: bidirectional
+
+  # domain_name is the parent; this host serves child.lab.local.
+  - name: dc-child
+    os: windows
+    role: child_dc
+    private_ip: 10.0.1.30
+    vars:
+      domain_name: lab.local
+
+  - name: srv-win01
+    os: windows
+    role: member
+    instance_type: t3.small
+    private_ip: 10.0.1.40
+    vars:
+      domain_name: lab.local
+    modules:
+      - name: laps
+        vars:
+          laps_read_principals:
+            - Domain Users
+
+  - name: srv-child
+    os: windows
+    role: member
+    instance_type: t3.small
+    private_ip: 10.0.1.50
+    vars:
+      domain_name: child.lab.local

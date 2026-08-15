@@ -1,0 +1,5 @@
+---
+- name: Restart sql server
+  ansible.windows.win_service:
+    name: "MSSQL${{ sql_server_instance }}"
+    state: restarted

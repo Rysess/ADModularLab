@@ -1,0 +1,45 @@
+---
+# Domain plus a certificate authority on a member server, with all four
+# certificate-services scenarios enabled. About $0.14/hour.
+#
+#   LAB_FILE=examples/adcs.yml ./run.sh
+#
+# The CA is deliberately not on the domain controller: relaying a coerced DC to
+# a CA running on that same DC is blocked by NTLM reflection protection, which
+# makes ESC8 unexercisable.
+
+lab:
+  name: adcs-lab
+  region: eu-west-3
+  domain: lab.local
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 24
+
+defaults:
+  windows_instance_type: t3.medium
+  linux_instance_type: t3.nano
+  windows_disk_gb: 50
+  linux_disk_gb: 8
+  windows_version: "2022"
+  ubuntu_release: "22.04"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    instance_type: t3.medium
+    private_ip: 10.0.1.10
+    modules: []
+
+  - name: ca01
+    os: windows
+    role: member
+    instance_type: t3.medium
+    modules:
+      - name: adcs
+        vars:
+          adcs_esc1: true
+          adcs_esc4: true
+          adcs_esc8: true
+          adcs_esc11: true

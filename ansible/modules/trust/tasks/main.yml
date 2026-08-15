@@ -1,0 +1,11 @@
+---
+- name: Set up each trust partner
+  ansible.builtin.include_tasks:
+    file: partner.yml
+    apply:
+      tags: [trust]
+  loop: "{{ trust_partners }}"
+  loop_control:
+    loop_var: partner
+    label: "{{ partner.name }}"
+  tags: [trust]

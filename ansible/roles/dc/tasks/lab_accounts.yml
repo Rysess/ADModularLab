@@ -1,0 +1,55 @@
+---
+# Included by dc for a forest root and by domain_child with the domain
+# overridden, so every domain gets the same accounts.
+- name: Create lab users
+  microsoft.ad.user:
+    name: "{{ dc_lab_user_prefix }}{{ item }}"
+    sam_account_name: "{{ dc_lab_user_prefix }}{{ item }}"
+    upn: "{{ dc_lab_user_prefix }}{{ item }}@{{ dc_accounts_domain }}"
+    password: "{{ lab_user_password }}"
+    update_password: on_create
+    password_never_expires: true
+    enabled: true
+    state: present
+  loop: "{{ range(1, dc_lab_user_count + 1) | list }}"
+  loop_control:
+    label: "{{ dc_lab_user_prefix }}{{ item }}"
+  register: dc_lab_users
+  until: dc_lab_users is succeeded
+  retries: "{{ dc_ad_retries }}"
+  delay: "{{ dc_ad_delay }}"
+
+- name: Create the lab domain admin
+  microsoft.ad.user:
+    name: "{{ domain_admin_display }}"
+    sam_account_name: "{{ domain_admin_user }}"
+    upn: "{{ domain_admin_user }}@{{ dc_accounts_domain }}"
+    password: "{{ domain_admin_pw }}"
+    update_password: on_create
+    password_never_expires: true
+    enabled: true
+    groups:
+      add: [Domain Admins]
+    state: present
+  register: dc_da_user
+  until: dc_da_user is succeeded
+  retries: "{{ dc_ad_retries }}"
+  delay: "{{ dc_ad_delay }}"
+
+- name: Create the child domain promotion account
+  microsoft.ad.user:
+    name: "{{ dc_child_dc_display }}"
+    sam_account_name: "{{ child_dc_user }}"
+    upn: "{{ child_dc_user }}@{{ dc_accounts_domain }}"
+    password: "{{ child_dc_password }}"
+    update_password: on_create
+    password_never_expires: true
+    enabled: true
+    groups:
+      add: "{{ dc_child_dc_groups }}"
+    state: present
+  when: dc_child_dc_required | bool
+  register: dc_child_dc_account
+  until: dc_child_dc_account is succeeded
+  retries: "{{ dc_ad_retries }}"
+  delay: "{{ dc_ad_delay }}"

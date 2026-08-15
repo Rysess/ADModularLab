@@ -1,44 +1,187 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
-
-- name: Ensure Chocolatey is installed
-  ansible.windows.win_shell: |
-    if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-      Set-ExecutionPolicy Bypass -Scope Process -Force
-      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-      iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-    }
-  args:
-    creates: C:\ProgramData\chocolatey\bin\choco.exe
-
-- name: Install SQL Server Express + client tools
-  ansible.windows.win_shell: |
-    choco install sql-server-express -y --no-progress
-    choco install sqlserver-cmdlineutils -y --no-progress
-  args:
-    creates: 'C:\Program Files\Microsoft SQL Server\MSSQL15.SQLEXPRESS'
+# become is required: SQL setup encrypts its config XML through the CryptoAPI,
+# which cannot reach the machine key container under a WinRM network logon.
+- name: Install SQL Server Express and the client tools
+  chocolatey.chocolatey.win_chocolatey:
+    name: "{{ sql_server_packages }}"
+    state: present
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  vars:
+    ansible_become_flags: logon_type=batch
   register: sql_install
-  failed_when: sql_install.rc not in [0, 3010]
+  until: sql_install is succeeded
+  retries: 2
+  delay: 30
 
-- name: Open SQL port (VPC-internal)
-  ansible.windows.win_firewall_rule:
-    name: SQL-1433
-    localport: 1433
+- name: Reboot if the installer asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: sql_install.reboot_required | default(false)
+
+- name: Ensure the instance is running
+  ansible.windows.win_service:
+    name: "MSSQL${{ sql_server_instance }}"
+    state: started
+    start_mode: auto
+
+# Express ships with TCP/IP disabled on a dynamic port. The instance key is
+# version-stamped, so it is resolved through the Instance Names map.
+- name: Enable TCP/IP on a static port
+  ansible.windows.win_powershell:
+    parameters:
+      Instance: "{{ sql_server_instance }}"
+      Port: "{{ sql_server_port }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Instance,
+        [Parameter(Mandatory)][int]$Port
+      )
+      $ErrorActionPreference = 'Stop'
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      # Returns $null for a missing value instead of tripping StrictMode.
+      function Get-Value($Path, $Name) {
+          Get-ItemPropertyValue -Path $Path -Name $Name -ErrorAction SilentlyContinue
+      }
+
+      $names = 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL'
+      $key = Get-Value $names $Instance
+      if (-not $key) { throw "SQL instance '$Instance' not found under $names" }
+
+      $tcp = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$key\MSSQLServer\SuperSocketNetLib\Tcp"
+      $all = Join-Path $tcp 'IPAll'
+
+      if ((Get-Value $tcp 'Enabled') -ne 1) {
+          Set-ItemProperty -Path $tcp -Name Enabled -Value 1
+          $Ansible.Changed = $true
+      }
+      if ((Get-Value $all 'TcpPort') -ne "$Port") {
+          Set-ItemProperty -Path $all -Name TcpPort -Value "$Port"
+          $Ansible.Changed = $true
+      }
+      if ((Get-Value $all 'TcpDynamicPorts') -ne '') {
+          Set-ItemProperty -Path $all -Name TcpDynamicPorts -Value ''
+          $Ansible.Changed = $true
+      }
+  notify: Restart sql server
+
+- name: Apply the protocol change before connecting
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the instance to accept connections
+  ansible.windows.win_wait_for:
+    port: "{{ sql_server_port }}"
+    timeout: "{{ sql_server_start_timeout }}"
+
+- name: Open the SQL port (lab-internal only, the SG fronts the instance)
+  community.windows.win_firewall_rule:
+    name: "SQL-{{ sql_server_port }}"
+    localport: "{{ sql_server_port }}"
     protocol: tcp
     direction: in
     action: allow
-    enabled: yes
+    enabled: true
+    state: present
 
-- name: Seed a demo database + login
-  ansible.windows.win_shell: |
-    $sql = @"
-    IF DB_ID('LabApp') IS NULL CREATE DATABASE LabApp;
-    IF SUSER_ID('svc_labapp') IS NULL
-      CREATE LOGIN svc_labapp WITH PASSWORD = '{{ sql_sa_password | default(admin_password) }}';
-    "@
-    sqlcmd -S "localhost\SQLEXPRESS" -Q $sql
-  register: seed
-  changed_when: "'CREATE' in seed.stdout | default('')"
-  ignore_errors: yes
+# C:\temp inherits read for Users from C:\, so staged secrets get their own ACL.
+- name: Create the protected staging directory
+  ansible.windows.win_file:
+    path: "{{ sql_server_secret_dir }}"
+    state: directory
+
+- name: Grant only administrators and SYSTEM on the staging directory
+  ansible.windows.win_acl:
+    path: "{{ sql_server_secret_dir }}"
+    user: "{{ item }}"
+    rights: FullControl
+    type: allow
+    state: present
+    inherit: ContainerInherit, ObjectInherit
+    propagation: None
+  loop:
+    - BUILTIN\Administrators
+    - NT AUTHORITY\SYSTEM
+
+- name: Drop inherited access from the staging directory
+  ansible.windows.win_acl_inheritance:
+    path: "{{ sql_server_secret_dir }}"
+    state: absent
+    reorganize: false
+
+# The package never passes /SQLSYSADMINACCOUNTS, so the only sysadmin is
+# whoever ran setup: SYSTEM, not the Administrator Ansible connects as.
+- name: Grant the local administrators sysadmin
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Instance: ".\\{{ sql_server_instance }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Instance)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      $tsql = @"
+      SET NOCOUNT ON;
+      IF SUSER_ID('BUILTIN\Administrators') IS NULL
+      BEGIN CREATE LOGIN [BUILTIN\Administrators] FROM WINDOWS; PRINT 'CHANGED-LOGIN'; END
+      IF IS_SRVROLEMEMBER('sysadmin', 'BUILTIN\Administrators') = 0
+      BEGIN ALTER SERVER ROLE sysadmin ADD MEMBER [BUILTIN\Administrators]; PRINT 'CHANGED-ROLE'; END
+      "@
+
+      $out = & sqlcmd -S $Instance -b -Q $tsql 2>&1 | Out-String
+      $rc = $LASTEXITCODE
+      Write-Output $out
+      if ($rc -ne 0) { $Ansible.Failed = $true }
+      elseif ($out -match 'CHANGED-') { $Ansible.Changed = $true }
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+
+# Staged to a file, not a module parameter: no_log would hide sqlcmd's errors.
+- name: Stage the SQL login password
+  ansible.windows.win_copy:
+    content: "{{ sql_password }}"
+    dest: "{{ sql_server_secret_dir }}\\sql-login-password"
+  no_log: true
+
+- name: Seed the demo database and login
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Instance: ".\\{{ sql_server_instance }}"
+      Database: "{{ sql_server_database }}"
+      Login: "{{ sql_server_login }}"
+      PasswordFile: "{{ sql_server_secret_dir }}\\sql-login-password"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Instance,
+        [Parameter(Mandatory)][string]$Database,
+        [Parameter(Mandatory)][string]$Login,
+        [Parameter(Mandatory)][string]$PasswordFile
+      )
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      $password = (Get-Content -Path $PasswordFile -Raw).Trim()
+      Remove-Item -Path $PasswordFile -Force
+
+      # Alphanumeric by construction, so no T-SQL quoting is needed.
+      $tsql = @"
+      SET NOCOUNT ON;
+      IF DB_ID('$Database') IS NULL BEGIN CREATE DATABASE [$Database]; PRINT 'CHANGED-DB'; END
+      IF SUSER_ID('$Login') IS NULL
+      BEGIN CREATE LOGIN [$Login] WITH PASSWORD = '$password'; PRINT 'CHANGED-LOGIN'; END
+      "@
+
+      $out = & sqlcmd -S $Instance -b -Q $tsql 2>&1 | Out-String
+      $rc = $LASTEXITCODE
+      Write-Output ($out -replace [regex]::Escape($password), '<password>')
+      if ($rc -ne 0) { $Ansible.Failed = $true }
+      elseif ($out -match 'CHANGED-') { $Ansible.Changed = $true }

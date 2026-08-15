@@ -1,0 +1,20 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - "{{ lookup('env', 'AWS_REGION') | default('eu-west-3', true) }}"
+filters:
+  tag:Lab: "{{ lookup('env', 'LAB_NAME') }}"
+  instance-state-name: running
+hostnames:
+  - tag:LabHost
+keyed_groups:
+  - key: tags.Os
+    prefix: ""
+    separator: ""
+  - key: tags.LabRole
+    prefix: role
+  - key: tags.Modules.split(',') | select() | list
+    prefix: mod
+compose:
+  ansible_host: public_ip_address
+  private_ip: private_ip_address
+  modules: tags.Modules.split(',') | select() | list

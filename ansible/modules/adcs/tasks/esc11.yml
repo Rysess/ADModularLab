@@ -1,0 +1,34 @@
+---
+# 0x200 requires packet privacy on ICertRequest; cleared, NTLM can be relayed.
+- name: Clear IF_ENFORCEENCRYPTICERTREQUEST on the CA interface
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      CaName: "{{ adcs_ca_common_name }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$CaName)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      $key = "HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration\$CaName"
+      $flags = Get-ItemPropertyValue -Path $key -Name InterfaceFlags -ErrorAction SilentlyContinue
+      if ($null -eq $flags) { throw "InterfaceFlags not found under $key" }
+
+      $enforce = 0x200
+      Write-Output ("InterfaceFlags before: 0x{0:X}" -f $flags)
+
+      if (($flags -band $enforce) -eq 0) {
+          Write-Output 'IF_ENFORCEENCRYPTICERTREQUEST already clear'
+          return
+      }
+
+      Set-ItemProperty -Path $key -Name InterfaceFlags -Value ($flags -bxor $enforce)
+      Write-Output ("InterfaceFlags after:  0x{0:X}" -f ($flags -bxor $enforce))
+      $Ansible.Changed = $true
+  register: adcs_esc11_flags
+  notify: Restart certsvc
+
+- name: Report the CA interface flags
+  ansible.builtin.debug:
+    var: adcs_esc11_flags.output

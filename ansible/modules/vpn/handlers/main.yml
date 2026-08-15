@@ -1,9 +1,9 @@
 ---
-- name: restart resolved
-  service:
-    name: systemd-resolved
+- name: Restart openvpn
+  ansible.builtin.systemd_service:
+    name: "{{ vpn_service }}"
     state: restarted
-- name: restart openvpn
-  systemd:
-    name: openvpn-server@server
-    state: restarted
+
+- name: Persist iptables rules
+  ansible.builtin.command: netfilter-persistent save
+  changed_when: true

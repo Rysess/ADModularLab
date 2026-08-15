@@ -1,0 +1,17 @@
+---
+laps_dc_host: "{{ domain_dc_host }}"
+
+# Empty resolves to the domain's default computers container.
+laps_target_ou: ""
+
+# Never the built-in Administrator: rotating it locks Ansible out of the host.
+laps_managed_account: labadmin
+
+laps_password_age_days: 30
+laps_password_length: 20
+laps_password_complexity: 4
+laps_post_authentication_actions: 3
+laps_post_authentication_reset_delay_hours: 24
+
+# Anything beyond Domain Admins is the misconfiguration.
+laps_read_principals: []

@@ -1,0 +1,14 @@
+---
+sql_server_instance: SQLEXPRESS
+sql_server_database: LabApp
+sql_server_login: svc_labapp
+sql_server_port: 1433
+
+sql_server_workdir: 'C:\temp'
+sql_server_secret_dir: "{{ sql_server_workdir }}\\adlab-secrets"
+
+sql_server_packages:
+  - sql-server-express
+  - sqlserver-cmdlineutils
+
+sql_server_start_timeout: 300

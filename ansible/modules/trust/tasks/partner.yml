@@ -1,0 +1,90 @@
+---
+# Resolved from the inventory unless the partner is outside the lab.
+- name: Fail early when the partner has no domain controller
+  ansible.builtin.assert:
+    that: partner.name in dc_hosts_by_domain or partner.dns_server is defined
+    fail_msg: >-
+      No domain controller in the lab serves {{ partner.name }}. Add one, or
+      set dns_server on the partner entry.
+    quiet: true
+
+- name: Resolve the partner's domain controller
+  ansible.builtin.set_fact:
+    trust_partner_dns: >-
+      {{ partner.dns_server
+         | default(hostvars[dc_hosts_by_domain[partner.name]].private_ip, true) }}
+
+# domain_trust fails early if the partner does not resolve.
+- name: Add a conditional forwarder for {{ partner.name }}
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Zone: "{{ partner.name }}"
+      Master: "{{ trust_partner_dns }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Zone,
+        [Parameter(Mandatory)][string]$Master
+      )
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      $existing = Get-DnsServerZone -Name $Zone -ErrorAction SilentlyContinue
+      if ($existing -and $existing.ZoneType -ne 'Forwarder') {
+          # Rewriting an authoritative zone would break resolution for it.
+          $Ansible.Failed = $true
+          Write-Output "$Zone is already a $($existing.ZoneType) zone on this server; refusing to replace it with a conditional forwarder"
+          return
+      }
+      if ($existing) {
+          $current = @($existing.MasterServers | ForEach-Object { $_.IPAddressToString })
+          if ($current -contains $Master) {
+              Write-Output "conditional forwarder for $Zone already points at $Master"
+              return
+          }
+          Set-DnsServerConditionalForwarderZone -Name $Zone -MasterServers $Master
+          Write-Output "repointed the conditional forwarder for $Zone at $Master"
+          $Ansible.Changed = $true
+          return
+      }
+
+      Add-DnsServerConditionalForwarderZone -Name $Zone -MasterServers $Master
+      Write-Output "added a conditional forwarder for $Zone -> $Master"
+      $Ansible.Changed = $true
+
+- name: Wait for LDAP on {{ partner.name }}
+  ansible.windows.win_wait_for:
+    host: "{{ trust_partner_dns }}"
+    port: 389
+    timeout: "{{ trust_partner_wait_timeout }}"
+
+- name: Wait for DNS SRV records for {{ partner.name }}
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Zone: "{{ partner.name }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Zone)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      $rec = Resolve-DnsName -Name "_ldap._tcp.dc._msdcs.$Zone" -Type SRV -ErrorAction SilentlyContinue
+      if (-not $rec) { $Ansible.Failed = $true; Write-Output "no SRV records for $Zone yet" ; return }
+      ($rec | Where-Object { $_.Type -eq 'SRV' } | ForEach-Object { $_.NameTarget }) -join ', '
+  register: trust_dns
+  until: trust_dns is succeeded
+  retries: "{{ trust_retries }}"
+  delay: "{{ trust_delay }}"
+
+- name: Create the trust with {{ partner.name }}
+  microsoft.ad.domain_trust:
+    name: "{{ partner.name }}"
+    type: "{{ partner.type | default(trust_default_type) }}"
+    direction: "{{ partner.direction | default(trust_default_direction) }}"
+    trust_password: "{{ trust_password }}"
+    state: present
+  register: trust_result
+  until: trust_result is succeeded
+  retries: "{{ trust_retries }}"
+  delay: "{{ trust_delay }}"

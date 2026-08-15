@@ -1,0 +1,23 @@
+---
+# Set-ADAccountControl flips the single DONT_REQ_PREAUTH bit rather than
+# writing the userAccountControl bitmask wholesale.
+- name: Clear Kerberos pre-authentication
+  ansible.windows.win_powershell:
+    parameters:
+      Users: "{{ vulns_asreproast_users }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string[]]$Users)
+      $ErrorActionPreference = 'Stop'
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+
+      foreach ($u in $Users) {
+          $acct = Get-ADUser -Identity $u -Properties DoesNotRequirePreAuth
+          if (-not $acct.DoesNotRequirePreAuth) {
+              Set-ADAccountControl -Identity $u -DoesNotRequirePreAuth $true
+              Write-Output "cleared pre-auth on $u"
+              $Ansible.Changed = $true
+          }
+      }

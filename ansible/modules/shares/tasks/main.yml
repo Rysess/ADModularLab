@@ -1,11 +1,11 @@
 ---
-- name: Wait for WinRM
-  wait_for_connection:
-    timeout: 600
-
-- name: Resolve the DC inventory host
-  set_fact:
-    shares_dc_host: "{{ groups['role_dc'] | first }}"
+- name: Fail early when no domain controller is in the inventory
+  ansible.builtin.assert:
+    that: groups['role_dc'] | default([]) | length > 0
+    fail_msg: >-
+      The shares module creates AD groups on the domain controller, but no host
+      with role=dc is in the inventory. Check lab.yml.
+    quiet: true
 
 - name: Create AD security groups (on the DC)
   microsoft.ad.group:
@@ -15,7 +15,10 @@
     state: present
   loop: "{{ shares_ad_groups }}"
   delegate_to: "{{ shares_dc_host }}"
-  ignore_errors: yes
+  register: shares_groups
+  until: shares_groups is succeeded
+  retries: "{{ shares_ad_retries }}"
+  delay: "{{ shares_ad_delay }}"
 
 - name: Populate AD group memberships (users + nested Auditors)
   microsoft.ad.group:
@@ -28,7 +31,10 @@
   loop_control:
     label: "{{ item.group }}"
   delegate_to: "{{ shares_dc_host }}"
-  ignore_errors: yes
+  register: shares_members
+  until: shares_members is succeeded
+  retries: "{{ shares_ad_retries }}"
+  delay: "{{ shares_ad_delay }}"
 
 - name: Create share root dirs
   ansible.windows.win_file:
@@ -69,7 +75,7 @@
   ansible.windows.win_acl_inheritance:
     path: "{{ shares_root }}\\{{ item.name }}"
     state: absent
-    reorganize: no
+    reorganize: false
   loop: "{{ shares_definitions }}"
   loop_control:
     label: "{{ item.name }}"
@@ -94,7 +100,7 @@
     state: present
     full: "BUILTIN\\Administrators"
     read: "{{ shares_netbios }}\\{{ item.grp }}"
-    list: yes
+    list: true
   loop: "{{ shares_definitions }}"
   loop_control:
     label: "{{ item.name }} <- {{ item.grp }}"

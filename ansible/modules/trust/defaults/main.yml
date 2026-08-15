@@ -1,0 +1,12 @@
+---
+# { name, type, direction } per partner; dns_server only for a domain outside
+# the lab. domain_trust writes one side, so both DCs run this with the same
+# trust_password.
+trust_partners: []
+
+trust_default_type: forest
+trust_default_direction: bidirectional
+
+trust_partner_wait_timeout: 1800
+trust_retries: 5
+trust_delay: 30

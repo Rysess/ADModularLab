@@ -1,0 +1,15 @@
+---
+skip_list:
+  # site.yml runs the module plays with strategy: free so that hosts with
+  # different module lists do not wait on each other at every task boundary.
+  # The rule exists because run_once is unreliable under that strategy. No play
+  # or role here uses run_once: tasks that would otherwise want it are guarded
+  # on the state they create, so running them from every host is a no-op after
+  # the first.
+  - run-once[play]
+
+exclude_paths:
+  - client1.ovpn
+  - group_vars/all/lab_secrets.yml
+  - group_vars/all/lab_facts.yml
+  - host_vars/

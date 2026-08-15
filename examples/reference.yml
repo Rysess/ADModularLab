@@ -1,0 +1,168 @@
+---
+# Every configuration key the lab understands, with defaults where one applies.
+# A reference rather than a recommendation: it deploys, at about $0.52/hour.
+#
+#   LAB_FILE=examples/reference.yml ./run.sh
+#
+# ./run.sh validates this file before Terraform runs. Copy the parts you need
+# into your own lab.yml.
+
+lab:
+  # Becomes the EC2 tag every resource carries and the value the dynamic
+  # inventory filters on. 1-64 chars, alphanumeric plus . _ -
+  name: reference-lab
+
+  region: eu-west-3
+
+  # Forest root domain. The first label becomes the NetBIOS name, so it must be
+  # 15 characters or fewer.
+  domain: lab.local
+
+  # sAMAccountName of the lab's domain admin, 20 characters or fewer.
+  domain_admin: john.john
+  domain_admin_display: John John
+
+  # Hours until the ExpiresAt tag, for a reaper to act on. Default 168.
+  expires_hours: 24
+
+  # Leave IMDSv1 reachable instead of requiring IMDSv2. Default false.
+  imdsv1_enabled: false
+
+defaults:
+  windows_instance_type: t3.medium
+  linux_instance_type: t3.nano
+  windows_disk_gb: 50
+  linux_disk_gb: 8
+  # 2016, 2019, 2022 or 2025. Default 2022.
+  windows_version: "2022"
+  # Default 22.04.
+  ubuntu_release: "22.04"
+
+hosts:
+  # --- forest root ------------------------------------------------------
+  - name: dc01
+    os: windows
+    role: dc
+    instance_type: t3.medium
+    disk_gb: 50
+    private_ip: 10.0.1.10
+    vars:
+      domain_name: lab.local
+    modules:
+      # A module is either a bare name ...
+      - gmsa
+      # ... or a mapping carrying variables for that module on that host.
+      - name: vulns
+        vars:
+          vulns_kerberoast: true
+          vulns_asreproast: true
+          vulns_unconstrained_delegation: false
+          vulns_rbcd: false
+          vulns_dcsync: true
+          vulns_dcsync_principals: [LabUser5]
+      - name: trust
+        vars:
+          trust_partners:
+            - name: partner.local
+              type: forest          # forest or external
+              direction: bidirectional  # inbound, outbound or bidirectional
+
+  # --- second forest ----------------------------------------------------
+  - name: dc02
+    os: windows
+    role: dc
+    private_ip: 10.0.1.20
+    vars:
+      domain_name: partner.local
+    modules:
+      - name: trust
+        vars:
+          trust_partners:
+            - name: lab.local
+              type: forest
+              direction: bidirectional
+
+  # --- child domain -----------------------------------------------------
+  # domain_name is the parent; serves child.<parent> unless
+  # domain_child_domain says otherwise. The parent-child trust is automatic.
+  - name: dc-child
+    os: windows
+    role: child_dc
+    private_ip: 10.0.1.30
+    vars:
+      domain_name: lab.local
+
+  # --- member server ----------------------------------------------------
+  - name: srv-win01
+    os: windows
+    role: member
+    instance_type: t3.medium
+    private_ip: 10.0.1.40
+    vars:
+      domain_name: lab.local
+    modules:
+      - shares
+      - sql_server
+      - name: laps
+        vars:
+          # Anything beyond Domain Admins is the misconfiguration.
+          laps_read_principals: [Domain Users]
+      - edr_agent
+
+  - name: srv-child
+    os: windows
+    role: member
+    instance_type: t3.small
+    private_ip: 10.0.1.50
+    vars:
+      domain_name: child.lab.local
+
+  # --- certificate authority --------------------------------------------
+  # Deliberately a member server, not the DC: relaying a coerced DC to a CA on
+  # that same DC is blocked by NTLM reflection protection.
+  - name: ca01
+    os: windows
+    role: member
+    private_ip: 10.0.1.60
+    vars:
+      domain_name: lab.local
+    modules:
+      - name: adcs
+        vars:
+          adcs_esc1: true
+          adcs_esc4: true
+          adcs_esc8: true
+          adcs_esc11: true
+
+  # --- telemetry --------------------------------------------------------
+  - name: elastic01
+    os: linux
+    role: standalone
+    instance_type: t3.large
+    disk_gb: 100
+    modules:
+      - edr_server
+
+  # --- access -----------------------------------------------------------
+  - name: vpn01
+    os: linux
+    role: standalone
+    instance_type: t3.nano
+    disk_gb: 8
+    # Required: the instance forwards traffic for the VPN client range.
+    source_dest_check: false
+    # Opens a port to the operator's IP, in addition to the role's defaults.
+    expose_ports:
+      - { port: 1194, proto: udp }
+    modules:
+      - vpn
+
+  # --- rebuilt from a snapshot ------------------------------------------
+  # ./snapshot.sh writes an AMI per instance; setting ami: here rebuilds from
+  # one and skips the promotion and join cycle. Commented out because the id is
+  # specific to your account.
+  #
+  # - name: srv-win02
+  #   os: windows
+  #   role: member
+  #   ami: ami-0123456789abcdef0

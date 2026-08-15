@@ -1,4 +1,14 @@
 ---
 gmsa_count: 4
-gmsa_name_prefix: "gmsa"
-gmsa_principals: "Domain Computers"
+gmsa_name_prefix: gmsa
+
+# AD binds a gMSA to the newest effective root key at creation, so keys and
+# accounts are interleaved to get one key each.
+gmsa_dedicated_kds_key: true
+
+gmsa_principals:
+  - Domain Computers
+
+gmsa_kerberos_encryption_types:
+  - aes128
+  - aes256

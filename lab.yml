@@ -1,14 +1,19 @@
+---
 lab:
   name: adshares-lab
   region: eu-west-3
   domain: lab.local
   domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 168
 
 defaults:
   windows_instance_type: t3.large
   linux_instance_type: t3.large
   windows_disk_gb: 50
   linux_disk_gb: 50
+  windows_version: "2022"
+  ubuntu_release: "22.04"
 
 hosts:
   - name: dc01
@@ -20,13 +25,6 @@ hosts:
       - gmsa
 
   - name: srv-win01
-    os: windows
-    role: member
-    instance_type: t3.medium
-    modules:
-      - shares
-
-  - name: srv-win02
     os: windows
     role: member
     instance_type: t3.medium
