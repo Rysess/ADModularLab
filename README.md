@@ -5,18 +5,9 @@ and the modules each one runs. Terraform builds the infrastructure, Ansible
 discovers it through the EC2 dynamic inventory and applies the modules. Access is
 provided through an OpenVPN profile generated at deployment.
 
-> The lab exposes WinRM (5985), RDP and SSH to the deploying machine's public IP,
-> and runs deliberately weak Active Directory configurations. Do not connect it to
-> anything you care about.
 
 ## Requirements
 
-| Tool | Version |
-| ---- | ------- |
-| Terraform | >= 1.6 |
-| Python | >= 3.9 |
-| AWS CLI | v2 |
-| `jq` | any |
 
 ```
 python3 -m venv venv
@@ -220,23 +211,6 @@ export LAB_NAME=adshares-lab AWS_REGION=eu-west-3
 ansible-playbook site.yml --tags modules --limit mod_shares
 ```
 
-## Not implemented
-
-`sccm` — a Configuration Manager site with client push enabled and the domain
-controller enrolled as a client. Blocked on media: Microsoft distributes
-Configuration Manager baseline media through the Evaluation Center, VLSC and
-the M365 admin center, none of which offer a stable unauthenticated URL, so the
-module would have to take a caller-supplied `sccm_media_url` or
-`sccm_media_path`.
-
-The rest is automatable: IIS/BITS/RDC prerequisites, Windows ADK and the WinPE
-add-on (stable FWLINK URLs), SQL Server Developer (bootstrapper), the AD schema
-extension via `extadsch.exe`, the System Management container and its ACL, and
-an unattended `setup.exe /script` install.
-
-Budget a dedicated site server at 16 GB RAM and 200+ GB disk, and 1.5-3 hours
-for the build.
-
 ## Adding a module
 
 1. Create `ansible/modules/<name>/tasks/main.yml`
@@ -245,18 +219,6 @@ for the build.
 3. Add `<name>` to a host `modules` list in `lab.yml`
 
 No change to Terraform or `site.yml` is required.
-
-## Snapshots
-
-`./snapshot.sh` creates an AMI per instance, tagged with the lab and host name.
-Set `ami: <id>` on a host in `lab.yml` to rebuild from one, which skips the ~40
-minute promotion and join cycle. Changing `ami:` replaces that instance; drift
-of the upstream Amazon AMIs is ignored, so a new upstream image never silently
-rebuilds a live lab.
-
-A snapshot is not sysprepped, so EC2 publishes no password data for it: hosts
-restored this way keep the local Administrator password from the snapshot, and
-`lab_credentials.txt` says so instead of printing one.
 
 ## Credentials
 
