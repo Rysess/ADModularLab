@@ -28,8 +28,7 @@ hosts:
     os: windows
     role: dc
     private_ip: 10.0.1.10
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - name: trust
         vars:
@@ -42,8 +41,7 @@ hosts:
     os: windows
     role: dc
     private_ip: 10.0.1.20
-    vars:
-      domain_name: partner.local
+    domain: partner.local
     modules:
       - name: trust
         vars:
@@ -52,21 +50,19 @@ hosts:
               type: forest
               direction: bidirectional
 
-  # domain_name is the parent; this host serves child.lab.local.
+  # Serves child.lab.local; its parent is that domain minus the first label.
   - name: dc-child
     os: windows
     role: child_dc
     private_ip: 10.0.1.30
-    vars:
-      domain_name: lab.local
+    domain: child.lab.local
 
   - name: srv-win01
     os: windows
     role: member
     instance_type: t3.small
     private_ip: 10.0.1.40
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - name: laps
         vars:
@@ -78,5 +74,4 @@ hosts:
     role: member
     instance_type: t3.small
     private_ip: 10.0.1.50
-    vars:
-      domain_name: child.lab.local
+    domain: child.lab.local

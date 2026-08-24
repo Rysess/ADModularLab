@@ -9,7 +9,7 @@ locals {
   }
 
   lab_secrets = {
-    domain_name          = local.lab.domain
+    domain_name          = local.lab_domain
     domain_admin_user    = local.lab.domain_admin
     domain_admin_display = try(local.lab.domain_admin_display, local.lab.domain_admin)
     domain_admin_pw      = random_password.lab["domain_admin"].result
@@ -53,17 +53,14 @@ resource "local_file" "lab_facts" {
 }
 
 locals {
+  # The domain a host serves or joins. A child_dc serves its own domain like
+  # any other host; its parent is the domain minus the first label.
   host_domain = {
-    for k, h in local.hosts : k => try(h.vars.domain_name, local.lab.domain)
-  }
-
-  # Written to host_vars so every host can resolve which DC serves a domain,
-  # not just the child itself.
-  host_child_domain = {
-    for k, h in local.hosts : k => try(
-      h.vars.domain_child_domain,
-      "child.${local.host_domain[k]}"
-    ) if try(h.role, "") == "child_dc"
+    for k, h in local.hosts : k => try(h.domain, (
+      try(h.role, "") == "child_dc"
+      ? "${try(h.child_label, local.lab_child_label)}.${local.lab_domain}"
+      : local.lab_domain
+    ))
   }
 
   # ansible_password must be a host var: under delegate_to a group_vars
@@ -73,9 +70,6 @@ locals {
       local.host_module_vars[k],
       try(h.vars, {}),
       { domain_name = local.host_domain[k] },
-      contains(keys(local.host_child_domain), k)
-      ? { domain_child_domain = local.host_child_domain[k] }
-      : {},
       h.os == "windows" ? { ansible_password = local.windows_admin_passwords[k] } : {}
     )
   }

@@ -89,7 +89,7 @@ def check_lab(lab, problems):
     if not REGION_RE.match(str(lab.get("region", ""))):
         problems.append(f"lab.region {lab.get('region')!r} is not an AWS region id")
 
-    domain = str(lab.get("domain", ""))
+    domain = lab_domain(lab)
     if not DOMAIN_RE.match(domain):
         problems.append(f"lab.domain {domain!r} must be a dotted DNS name, e.g. lab.local")
     elif len(domain.split(".")[0]) > 15:
@@ -162,15 +162,27 @@ def check_private_ip(host, seen_ips, problems):
     seen_ips[ip] = name
 
 
+def lab_domain(lab):
+    return str(lab.get("domain", "lab.local"))
+
+
 def host_domain(host, lab):
-    """The domain a host belongs to: its own override, else the lab's."""
-    return str((host.get("vars") or {}).get("domain_name", lab.get("domain", "")))
+    """The domain a host serves or joins.
+
+    A child_dc serves its own domain like any other host; without an explicit
+    one it is <child_label>.<lab domain>.
+    """
+    if host.get("domain"):
+        return str(host["domain"])
+    if host.get("role") == "child_dc":
+        label = str(host.get("child_label", lab.get("child_label", "child")))
+        return f"{label}.{lab_domain(lab)}"
+    return lab_domain(lab)
 
 
-def child_domain(host, lab):
-    """The domain a child_dc host serves."""
-    return str((host.get("vars") or {}).get(
-        "domain_child_domain", f"child.{host_domain(host, lab)}"))
+def parent_domain(domain):
+    """A child domain's parent is that domain minus its first label."""
+    return domain.split(".", 1)[1] if "." in domain else ""
 
 
 def check_domains(hosts, lab, problems):
@@ -181,20 +193,26 @@ def check_domains(hosts, lab, problems):
         if role == "dc":
             root_domains.add(host_domain(h, lab))
         elif role == "child_dc":
-            all_domains.add(child_domain(h, lab))
+            all_domains.add(host_domain(h, lab))
     all_domains |= root_domains
-    multi = len(all_domains) > 1
+
+    # Ambiguity comes from choice, not from count. A dc or child_dc is only
+    # ambiguous when the lab has more than one forest root; a member is
+    # ambiguous as soon as there is more than one domain it could join.
+    multi_roots = len(root_domains) > 1
+    multi_domains = len(all_domains) > 1
 
     for h in hosts:
         name, role = h.get("name"), h.get("role", "standalone")
-        declared = (h.get("vars") or {}).get("domain_name")
+        declared = h.get("domain") or h.get("child_label")
 
-        # One domain: optional. Two or more: every host must say which.
-        if multi and role in ROLE_DIR and role != "standalone" and not declared:
+        ambiguous = multi_roots if role in ("dc", "child_dc") else multi_domains
+        if ambiguous and role in ROLE_DIR and role != "standalone" and not declared:
+            choices = sorted(root_domains if role in ("dc", "child_dc") else all_domains)
             problems.append(
-                f"{name}: the lab has {len(all_domains)} domains "
-                f"({', '.join(sorted(all_domains))}), so this host must declare "
-                f"vars.domain_name; it would otherwise default to {lab.get('domain')!r}")
+                f"{name}: this lab has more than one domain this host could belong to "
+                f"({', '.join(choices)}), so it must declare 'domain'; it would "
+                f"otherwise default to {host_domain(h, lab)!r}")
 
         if role == "member":
             if host_domain(h, lab) not in all_domains:
@@ -202,16 +220,20 @@ def check_domains(hosts, lab, problems):
                     f"{name}: joins {host_domain(h, lab)!r}, which no domain controller "
                     f"in the lab serves. Known domains: {sorted(all_domains)}")
         elif role == "child_dc":
-            if host_domain(h, lab) not in root_domains:
+            own = host_domain(h, lab)
+            parent = parent_domain(own)
+            if not parent:
+                problems.append(f"{name}: domain {own!r} has no parent label; a child "
+                                f"domain looks like child.lab.local")
+            elif parent not in root_domains:
                 problems.append(
-                    f"{name}: is a child of {host_domain(h, lab)!r}, which no host with "
-                    f"role=dc serves. Known: {sorted(root_domains)}")
-            if child_domain(h, lab) in root_domains:
+                    f"{name}: serves {own!r}, so its parent is {parent!r}, which no host "
+                    f"with role=dc serves. Known: {sorted(root_domains)}")
+            if own in root_domains:
                 problems.append(
-                    f"{name}: child domain {child_domain(h, lab)!r} collides with a "
-                    f"forest root of the same name")
-        elif role == "dc" and declared and declared in all_domains - {declared}:
-            problems.append(f"{name}: domain {declared!r} is served by more than one host")
+                    f"{name}: child domain {own!r} collides with a forest root of the "
+                    f"same name")
+
 
     seen = {}
     for h in hosts:
@@ -315,6 +337,21 @@ def main():
         host_vars = h.get("vars")
         if host_vars is not None and not isinstance(host_vars, dict):
             problems.append(f"{name}: 'vars' must be a mapping")
+        elif host_vars and "domain_name" in host_vars:
+            problems.append(f"{name}: set the host's 'domain' field rather than "
+                            f"vars.domain_name")
+
+        dom = h.get("domain")
+        if dom is not None and not DOMAIN_RE.match(str(dom)):
+            problems.append(f"{name}: domain {dom!r} must be a dotted DNS name")
+        if h.get("child_label") is not None:
+            if role != "child_dc":
+                problems.append(f"{name}: child_label is only valid on a child_dc host")
+            elif dom is not None:
+                problems.append(f"{name}: set either 'domain' or 'child_label', not both")
+            elif not re.match(r"^[A-Za-z0-9][A-Za-z0-9-]*$", str(h["child_label"])):
+                problems.append(f"{name}: child_label {h['child_label']!r} must be a "
+                                f"single DNS label")
 
         disk = h.get("disk_gb")
         if disk is not None and (not isinstance(disk, int) or disk < 8):

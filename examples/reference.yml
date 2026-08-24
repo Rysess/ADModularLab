@@ -14,9 +14,12 @@ lab:
 
   region: eu-west-3
 
-  # Forest root domain. The first label becomes the NetBIOS name, so it must be
-  # 15 characters or fewer.
+  # Forest root domain. Default lab.local. The first label becomes the NetBIOS
+  # name, so it must be 15 characters or fewer.
   domain: lab.local
+
+  # Label a child_dc gets when it declares neither domain nor child_label.
+  child_label: child
 
   # sAMAccountName of the lab's domain admin, 20 characters or fewer.
   domain_admin: john.john
@@ -50,8 +53,9 @@ hosts:
     instance_type: t3.medium
     disk_gb: 50
     private_ip: 10.0.1.10
-    vars:
-      domain_name: lab.local
+    # The domain this host serves or joins. Optional while the lab has only
+    # one domain a host could belong to.
+    domain: lab.local
     modules:
       # A module is either a bare name ...
       - gmsa
@@ -76,8 +80,7 @@ hosts:
     os: windows
     role: dc
     private_ip: 10.0.1.20
-    vars:
-      domain_name: partner.local
+    domain: partner.local
     modules:
       - name: trust
         vars:
@@ -87,14 +90,15 @@ hosts:
               direction: bidirectional
 
   # --- child domain -----------------------------------------------------
-  # domain_name is the parent; serves child.<parent> unless
-  # domain_child_domain says otherwise. The parent-child trust is automatic.
+  # Declares the domain it serves; the parent is that minus the first label.
+  # Without either key it would serve child.lab.local. The parent-child trust
+  # comes with the promotion.
   - name: dc-child
     os: windows
     role: child_dc
     private_ip: 10.0.1.30
-    vars:
-      domain_name: lab.local
+    domain: child.lab.local
+    # child_label: research   # research.lab.local, instead of naming domain
 
   # --- member server ----------------------------------------------------
   - name: srv-win01
@@ -102,8 +106,7 @@ hosts:
     role: member
     instance_type: t3.medium
     private_ip: 10.0.1.40
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - shares
       - sql_server
@@ -123,8 +126,7 @@ hosts:
     private_ip: 10.0.1.50
     # Overrides defaults.windows_version for this host only.
     windows_version: "2019"
-    vars:
-      domain_name: child.lab.local
+    domain: child.lab.local
     modules:
       # For a host with no EDR. Excluded dirs are created either way.
       - name: defender
@@ -139,8 +141,7 @@ hosts:
     os: windows
     role: member
     private_ip: 10.0.1.60
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - name: adcs
         vars:

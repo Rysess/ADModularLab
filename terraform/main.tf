@@ -1,8 +1,12 @@
 locals {
-  cfg      = yamldecode(file("${path.module}/${var.lab_file}"))
-  lab      = local.cfg.lab
-  defaults = try(local.cfg.defaults, {})
-  hosts    = { for h in local.cfg.hosts : h.name => h }
+  cfg = yamldecode(file("${path.module}/${var.lab_file}"))
+  lab = local.cfg.lab
+
+  # Forest root domain of the lab, and the label a child_dc gets by default.
+  lab_domain      = try(local.lab.domain, "lab.local")
+  lab_child_label = try(local.lab.child_label, "child")
+  defaults        = try(local.cfg.defaults, {})
+  hosts           = { for h in local.cfg.hosts : h.name => h }
 
   windows_hosts = { for k, h in local.hosts : k => h if h.os == "windows" }
 

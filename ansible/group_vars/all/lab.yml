@@ -1,13 +1,10 @@
 ---
-# Domain -> the DC serving it. Keyed on domain rather than inventory order,
-# which is arbitrary once a lab holds several.
+# Domain -> the DC serving it. Every domain-bearing host declares the domain it
+# serves or joins, so forest roots and child domains key the same way.
 dc_hosts_by_domain: >-
-  {{ dict(groups['role_dc'] | default([])
+  {{ dict((groups['role_dc'] | default([]) + groups['role_child_dc'] | default([]))
           | map('extract', hostvars, 'domain_name')
-          | zip(groups['role_dc'] | default([])))
-     | combine(dict(groups['role_child_dc'] | default([])
-          | map('extract', hostvars, 'domain_child_domain')
-          | zip(groups['role_child_dc'] | default([])))) }}
+          | zip(groups['role_dc'] | default([]) + groups['role_child_dc'] | default([]))) }}
 
 domain_dc_host: >-
   {{ dc_hosts_by_domain.get(domain_name,

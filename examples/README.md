@@ -38,12 +38,16 @@ labs.
 
 ## Domains
 
-One domain: naming it is optional. Two or more: every domain-bearing host must
-declare `vars: domain_name:`, and `./run.sh` refuses otherwise.
+`lab.domain` is the forest root, `lab.local` if omitted. Every host has a
+`domain`: the one it serves or joins, inherited from the lab unless stated.
+
+Naming it is only required where there is a genuine choice — more than one
+forest root for a `dc` or `child_dc`, more than one domain at all for a
+`member`. `./run.sh` refuses otherwise:
 
 ```
-dc01: the lab has 3 domains (child.lab.local, lab.local, partner.local), so
-this host must declare vars.domain_name
+srv1: this lab has more than one domain this host could belong to
+(child.lab.local, lab.local), so it must declare 'domain'
 ```
 
 ## Writing your own

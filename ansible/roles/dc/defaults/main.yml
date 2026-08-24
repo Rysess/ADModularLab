@@ -23,6 +23,7 @@ dc_child_dc_groups:
 dc_child_dc_required: >-
   {{ groups['role_child_dc'] | default([])
      | map('extract', hostvars, 'domain_name')
+     | map('regex_replace', '^[^.]+\.', '')
      | select('equalto', domain_name) | list | length > 0 }}
 
 dc_ad_retries: 5

@@ -68,10 +68,11 @@ hosts:
       - shares
 ```
 
-Optional per-host fields: `instance_type`, `disk_gb`, `private_ip`, `ami`,
-`windows_version`, `source_dest_check`, `expose_ports`.
+Optional per-host fields: `domain`, `child_label`, `instance_type`, `disk_gb`,
+`private_ip`, `ami`, `windows_version`, `source_dest_check`, `expose_ports`.
 
-Optional `lab` fields: `domain_admin_display`, `expires_hours`,
+Optional `lab` fields: `domain` (default `lab.local`), `child_label` (default
+`child`), `domain_admin_display`, `expires_hours`,
 `expires_action` (`stop` or `terminate`, default `stop`), `expires_enabled`
 (default true), `imdsv1_enabled` (defaults to IMDSv2-only; set true to leave
 IMDSv1 reachable for SSRF scenarios).
@@ -98,35 +99,49 @@ alongside its module variables and overriding them.
 
 ### Domains
 
-With one domain, naming it is optional. With two or more, every domain-bearing
-host must declare the `domain_name` it serves or joins, and `run.sh` refuses
-otherwise:
+`lab.domain` is the forest root, `lab.local` if omitted. Every host has a
+`domain` — the one it **serves or joins** — inherited from the lab unless the
+host says otherwise. That holds for every role, including `child_dc`: a child
+declares the domain it serves, and its parent is that domain minus the first
+label.
 
 ```yaml
-# a second forest root
-- name: dc02
-  role: dc
-  vars:
-    domain_name: partner.local
+lab:
+  domain: lab.local          # default
 
-# a child of lab.local; serves child.lab.local
-- name: dc-child
-  role: child_dc
+hosts:
+  - name: dc01               # serves lab.local
+    role: dc
 
-# joins the child domain rather than the lab's
-- name: srv-child
-  role: member
-  vars:
-    domain_name: child.lab.local
+  - name: dc02               # serves a second forest
+    role: dc
+    domain: partner.local
+
+  - name: dc-child           # serves child.lab.local, parent lab.local
+    role: child_dc
+
+  - name: dc-res             # serves research.lab.local
+    role: child_dc
+    child_label: research
+
+  - name: srv-child          # joins the child domain
+    role: member
+    domain: child.lab.local
 ```
 
-A `child_dc` host is a child of the domain it belongs to, and serves
-`child.<parent>` unless `domain_child_domain` says otherwise.
+A `child_dc` serves `<child_label>.<lab.domain>`, with `child_label` defaulting
+to `lab.child_label` and then to `child`. Naming `domain` outright does the same
+job and is the only way to place a child under something other than the lab
+root; the two are mutually exclusive.
+
+Declaring `domain` is required only where there is a real choice: more than one
+forest root for a `dc` or `child_dc`, more than one domain at all for a
+`member`. Otherwise it is optional, and stating it anyway is never an error.
 
 Roles and modules resolve "the DC for my domain" through `dc_hosts_by_domain`,
-which is keyed on domain rather than on inventory order, so nothing needs
-pinning when a lab holds several. `run.sh` rejects a host whose domain no
-controller in the lab serves.
+keyed on domain rather than inventory order, so nothing needs pinning when a lab
+holds several. `run.sh` rejects a host whose domain no controller serves, and a
+child whose parent no `dc` serves.
 
 Domain admin, DSRM and lab user credentials are shared across every domain in a
 lab.
