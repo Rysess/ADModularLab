@@ -4,13 +4,11 @@
 #
 #   LAB_FILE=examples/trusts.yml ./run.sh
 #
-# More than one domain, so every domain-bearing host declares which it is in.
-# Credentials are shared across all of them.
+# Credentials are shared across every domain in the lab.
 
 lab:
   name: trusts-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   domain_admin_display: John John
   expires_hours: 24
@@ -50,7 +48,7 @@ hosts:
               type: forest
               direction: bidirectional
 
-  # Serves child.lab.local; its parent is that domain minus the first label.
+  # Parent is the domain minus its first label, so a child of lab.local.
   - name: dc-child
     os: windows
     role: child_dc

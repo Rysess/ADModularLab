@@ -30,9 +30,8 @@ The computer name is set by the `Set Windows computer names` play in
 
 Consumed from Terraform: `domain_name`, `domain_netbios`, `dsrm_password`.
 
-Set the host's `domain` field to the domain the child serves, or `child_label`
-to change only the first label. The parent follows from the name, so
-`child.lab.local` is a child of `lab.local`.
+The host's `domain` is the domain the child serves. The parent follows from the
+name, so `child.lab.local` is a child of `lab.local`.
 
 ## Does
 

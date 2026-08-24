@@ -36,8 +36,10 @@ the matching return route.
 | `vpn_profile_dest` | `ansible/client1.ovpn` | Where the profile is fetched to |
 
 Consumed from Terraform: `vpc_network`, `vpc_netmask`, `vpn_client_cidr`,
-`vpn_client_network`, `vpn_client_netmask`. From the inventory:
-`dc_private_ip`, `domain_name`.
+`vpn_client_network`, `vpn_client_netmask`. From the inventory: `dc_private_ip`.
+
+A standalone VPN host needs no `domain`; give it one to push a search domain and
+to choose which controller it points clients at in a multi-domain lab.
 
 ## Creates
 

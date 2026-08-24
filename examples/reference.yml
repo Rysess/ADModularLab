@@ -14,13 +14,6 @@ lab:
 
   region: eu-west-3
 
-  # Forest root domain. Default lab.local. The first label becomes the NetBIOS
-  # name, so it must be 15 characters or fewer.
-  domain: lab.local
-
-  # Label a child_dc gets when it declares neither domain nor child_label.
-  child_label: child
-
   # sAMAccountName of the lab's domain admin, 20 characters or fewer.
   domain_admin: john.john
   domain_admin_display: John John
@@ -53,8 +46,8 @@ hosts:
     instance_type: t3.medium
     disk_gb: 50
     private_ip: 10.0.1.10
-    # The domain this host serves or joins. Optional while the lab has only
-    # one domain a host could belong to.
+    # The domain this host serves or joins. Required on every dc, child_dc
+    # and member.
     domain: lab.local
     modules:
       # A module is either a bare name ...
@@ -90,15 +83,13 @@ hosts:
               direction: bidirectional
 
   # --- child domain -----------------------------------------------------
-  # Declares the domain it serves; the parent is that minus the first label.
-  # Without either key it would serve child.lab.local. The parent-child trust
-  # comes with the promotion.
+  # The parent is the domain minus its first label, so this is a child of
+  # lab.local. The parent-child trust comes with the promotion.
   - name: dc-child
     os: windows
     role: child_dc
     private_ip: 10.0.1.30
     domain: child.lab.local
-    # child_label: research   # research.lab.local, instead of naming domain
 
   # --- member server ----------------------------------------------------
   - name: srv-win01

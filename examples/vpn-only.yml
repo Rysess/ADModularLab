@@ -7,7 +7,6 @@
 lab:
   name: vpn-only-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   expires_hours: 24
 

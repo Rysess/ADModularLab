@@ -89,13 +89,6 @@ def check_lab(lab, problems):
     if not REGION_RE.match(str(lab.get("region", ""))):
         problems.append(f"lab.region {lab.get('region')!r} is not an AWS region id")
 
-    domain = lab_domain(lab)
-    if not DOMAIN_RE.match(domain):
-        problems.append(f"lab.domain {domain!r} must be a dotted DNS name, e.g. lab.local")
-    elif len(domain.split(".")[0]) > 15:
-        problems.append(f"lab.domain {domain!r}: the first label becomes the NetBIOS name "
-                        f"and must be 15 characters or fewer")
-
     admin = str(lab.get("domain_admin", ""))
     if not admin:
         problems.append("lab.domain_admin is required")
@@ -162,87 +155,48 @@ def check_private_ip(host, seen_ips, problems):
     seen_ips[ip] = name
 
 
-def lab_domain(lab):
-    return str(lab.get("domain", "lab.local"))
-
-
-def host_domain(host, lab):
-    """The domain a host serves or joins.
-
-    A child_dc serves its own domain like any other host; without an explicit
-    one it is <child_label>.<lab domain>.
-    """
-    if host.get("domain"):
-        return str(host["domain"])
-    if host.get("role") == "child_dc":
-        label = str(host.get("child_label", lab.get("child_label", "child")))
-        return f"{label}.{lab_domain(lab)}"
-    return lab_domain(lab)
-
-
 def parent_domain(domain):
     """A child domain's parent is that domain minus its first label."""
     return domain.split(".", 1)[1] if "." in domain else ""
 
 
-def check_domains(hosts, lab, problems):
-    """Every host must belong to a domain some controller in the lab serves."""
-    root_domains, all_domains = set(), set()
-    for h in hosts:
-        role = h.get("role", "standalone")
-        if role == "dc":
-            root_domains.add(host_domain(h, lab))
-        elif role == "child_dc":
-            all_domains.add(host_domain(h, lab))
-    all_domains |= root_domains
-
-    # Ambiguity comes from choice, not from count. A dc or child_dc is only
-    # ambiguous when the lab has more than one forest root; a member is
-    # ambiguous as soon as there is more than one domain it could join.
-    multi_roots = len(root_domains) > 1
-    multi_domains = len(all_domains) > 1
+def check_domains(hosts, problems):
+    """Every domain a host belongs to must be served by a controller."""
+    roots = {h["domain"] for h in hosts
+             if h.get("role") == "dc" and h.get("domain")}
+    children = {h["domain"] for h in hosts
+                if h.get("role") == "child_dc" and h.get("domain")}
 
     for h in hosts:
-        name, role = h.get("name"), h.get("role", "standalone")
-        declared = h.get("domain") or h.get("child_label")
+        name, role, domain = h.get("name"), h.get("role", "standalone"), h.get("domain")
 
-        ambiguous = multi_roots if role in ("dc", "child_dc") else multi_domains
-        if ambiguous and role in ROLE_DIR and role != "standalone" and not declared:
-            choices = sorted(root_domains if role in ("dc", "child_dc") else all_domains)
-            problems.append(
-                f"{name}: this lab has more than one domain this host could belong to "
-                f"({', '.join(choices)}), so it must declare 'domain'; it would "
-                f"otherwise default to {host_domain(h, lab)!r}")
+        if role in ("dc", "child_dc", "member") and not domain:
+            problems.append(f"{name}: role={role} must declare 'domain'")
+            continue
+        if not domain:
+            continue
 
-        if role == "member":
-            if host_domain(h, lab) not in all_domains:
-                problems.append(
-                    f"{name}: joins {host_domain(h, lab)!r}, which no domain controller "
-                    f"in the lab serves. Known domains: {sorted(all_domains)}")
-        elif role == "child_dc":
-            own = host_domain(h, lab)
-            parent = parent_domain(own)
+        if role == "child_dc":
+            parent = parent_domain(domain)
             if not parent:
-                problems.append(f"{name}: domain {own!r} has no parent label; a child "
-                                f"domain looks like child.lab.local")
-            elif parent not in root_domains:
-                problems.append(
-                    f"{name}: serves {own!r}, so its parent is {parent!r}, which no host "
-                    f"with role=dc serves. Known: {sorted(root_domains)}")
-            if own in root_domains:
-                problems.append(
-                    f"{name}: child domain {own!r} collides with a forest root of the "
-                    f"same name")
-
+                problems.append(f"{name}: child domain {domain!r} needs a parent, "
+                                f"as in child.lab.local")
+            elif parent not in roots:
+                problems.append(f"{name}: parent {parent!r} is not served by any "
+                                f"role=dc host. Known: {sorted(roots) or 'none'}")
+            if domain in roots:
+                problems.append(f"{name}: {domain!r} is already a forest root")
+        elif role == "member" and domain not in roots | children:
+            problems.append(f"{name}: joins {domain!r}, which no controller serves. "
+                            f"Known: {sorted(roots | children) or 'none'}")
 
     seen = {}
     for h in hosts:
-        if h.get("role") == "dc":
-            d = host_domain(h, lab)
-            if d in seen:
-                problems.append(f"{h.get('name')}: domain {d!r} already served by {seen[d]}; "
-                                f"give one of them a different domain_name")
-            seen[d] = h.get("name")
+        if h.get("role") in ("dc", "child_dc") and h.get("domain"):
+            if h["domain"] in seen:
+                problems.append(f"{h['name']}: {h['domain']!r} is already served by "
+                                f"{seen[h['domain']]}")
+            seen[h["domain"]] = h["name"]
 
 
 def check_requirements(host, role, roles, itype, lab_roles, lab_modules, problems, warns):
@@ -296,7 +250,7 @@ def main():
 
     check_lab(lab, problems)
     check_defaults(defaults, problems)
-    check_domains(hosts, lab, problems)
+    check_domains(hosts, problems)
 
     seen_names, seen_ips = set(), {}
     lab_roles = {h.get("role", "standalone") for h in hosts}
@@ -342,16 +296,12 @@ def main():
                             f"vars.domain_name")
 
         dom = h.get("domain")
-        if dom is not None and not DOMAIN_RE.match(str(dom)):
-            problems.append(f"{name}: domain {dom!r} must be a dotted DNS name")
-        if h.get("child_label") is not None:
-            if role != "child_dc":
-                problems.append(f"{name}: child_label is only valid on a child_dc host")
-            elif dom is not None:
-                problems.append(f"{name}: set either 'domain' or 'child_label', not both")
-            elif not re.match(r"^[A-Za-z0-9][A-Za-z0-9-]*$", str(h["child_label"])):
-                problems.append(f"{name}: child_label {h['child_label']!r} must be a "
-                                f"single DNS label")
+        if dom is not None:
+            if not DOMAIN_RE.match(str(dom)):
+                problems.append(f"{name}: domain {dom!r} must be a dotted DNS name")
+            elif len(str(dom).split(".")[0]) > 15:
+                problems.append(f"{name}: domain {dom!r}: the first label becomes the "
+                                f"NetBIOS name and must be 15 characters or fewer")
 
         disk = h.get("disk_gb")
         if disk is not None and (not isinstance(disk, int) or disk < 8):

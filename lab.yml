@@ -2,7 +2,6 @@
 lab:
   name: adshares-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   domain_admin_display: John John
   expires_hours: 168
@@ -19,6 +18,7 @@ hosts:
   - name: dc01
     os: windows
     role: dc
+    domain: lab.local
     instance_type: t3.large
     private_ip: 10.0.1.10
     modules:
@@ -27,6 +27,7 @@ hosts:
   - name: srv-win01
     os: windows
     role: member
+    domain: lab.local
     instance_type: t3.medium
     modules:
       - shares

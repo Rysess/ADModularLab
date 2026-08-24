@@ -6,8 +6,10 @@ dc_hosts_by_domain: >-
           | map('extract', hostvars, 'domain_name')
           | zip(groups['role_dc'] | default([]) + groups['role_child_dc'] | default([]))) }}
 
+# A host with no domain of its own (a standalone vpn box, say) falls back to
+# the only controller; declare 'domain' on it to choose in a multi-domain lab.
 domain_dc_host: >-
-  {{ dc_hosts_by_domain.get(domain_name,
+  {{ dc_hosts_by_domain.get(domain_name | default(''),
        groups['role_dc'] | default([]) | first | default('')) }}
 
 dc_private_ip: "{{ hostvars[domain_dc_host].private_ip if domain_dc_host else '' }}"

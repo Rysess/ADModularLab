@@ -38,17 +38,9 @@ labs.
 
 ## Domains
 
-`lab.domain` is the forest root, `lab.local` if omitted. Every host has a
-`domain`: the one it serves or joins, inherited from the lab unless stated.
-
-Naming it is only required where there is a genuine choice — more than one
-forest root for a `dc` or `child_dc`, more than one domain at all for a
-`member`. `./run.sh` refuses otherwise:
-
-```
-srv1: this lab has more than one domain this host could belong to
-(child.lab.local, lab.local), so it must declare 'domain'
-```
+Every `dc`, `child_dc` and `member` names its `domain`. A `child_dc` is a child
+of that domain minus the first label, so `child.lab.local` sits under
+`lab.local`. A second forest is another `dc` with another domain.
 
 ## Writing your own
 

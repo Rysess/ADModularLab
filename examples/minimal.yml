@@ -10,7 +10,6 @@
 lab:
   name: minimal-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   expires_hours: 24
 
@@ -24,4 +23,5 @@ hosts:
   - name: dc01
     os: windows
     role: dc
+    domain: lab.local
     private_ip: 10.0.1.10

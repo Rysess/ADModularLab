@@ -13,6 +13,8 @@ server {{ vpn_client_network }} {{ vpn_client_netmask }}
 push "route {{ vpc_network }} {{ vpc_netmask }}"
 {% if dc_private_ip %}
 push "dhcp-option DNS {{ dc_private_ip }}"
+{% endif %}
+{% if domain_name is defined %}
 push "dhcp-option DOMAIN {{ domain_name }}"
 {% endif %}
 
