@@ -20,3 +20,6 @@ ansible/*.retry
 venv/
 __pycache__/
 *.pyc
+
+# Built by terraform from lambda/
+terraform/*.zip

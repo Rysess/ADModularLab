@@ -48,6 +48,8 @@ install -m 600 /dev/null "$CREDS"
   echo "elastic password      : $(terraform output -raw elastic_password)"
   echo "monitor password      : $(terraform output -raw monitor_password)"
   echo "sql password          : $(terraform output -raw sql_password)"
+  echo "child dc password     : $(terraform output -raw child_dc_password)"
+  echo "trust password        : $(terraform output -raw trust_password)"
   echo "ssh key               : $(terraform output -raw ssh_private_key_path)"
   echo
   echo "local Administrator passwords:"

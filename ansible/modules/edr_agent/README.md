@@ -23,6 +23,7 @@ matches the running stack.
 | `edr_agent_fleet_port` | `8220` | Fleet server port on the edr_server host |
 | `edr_agent_wait_retries` / `_delay` | `90` / `20` | Retry budget while the stack starts |
 | `edr_agent_fleet_wait_timeout` | `900` | Seconds to wait for the Fleet server port |
+| `edr_agent_excluded_dirs` | `[]` | Directories created and registered as Defend trusted-app entries |
 
 Consumed from Terraform: `elastic_password`. From the inventory:
 `elastic_private_ip`.
@@ -46,6 +47,23 @@ cannot repair an unenrolled agent in place; it exits non-zero with `the command
 is executed as root but the program files are not owned by the root user`.
 
 Both wait for the Fleet server port before enrolling.
+
+## Exclusions
+
+Empty by default: an agent monitors everything unless told otherwise. Any
+directory listed is created on the host and registered against Defend's
+`endpoint_trusted_apps` list, which is policy-agnostic, so the entry covers
+every agent in the lab. A 409 from Kibana means the entry already exists and is
+treated as unchanged.
+
+```yaml
+modules:
+  - name: edr_agent
+    vars:
+      edr_agent_excluded_dirs: ['C:\excluded']
+```
+
+For a host without an EDR, use the `defender` module instead.
 
 ## Scope
 

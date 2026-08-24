@@ -1,6 +1,14 @@
 locals {
-  windows_version = tostring(try(local.defaults.windows_version, "2022"))
-  ubuntu_release  = tostring(try(local.defaults.ubuntu_release, "22.04"))
+  ubuntu_release = tostring(try(local.defaults.ubuntu_release, "22.04"))
+
+  # Per host, falling back to the lab default. One AMI lookup per version in
+  # use, so a lab can mix 2019, 2022 and 2025.
+  host_windows_version = {
+    for k, h in local.hosts : k => tostring(try(
+      h.windows_version, local.defaults.windows_version, "2022"
+    ))
+  }
+  windows_versions = toset([for k, h in local.windows_hosts : local.host_windows_version[k]])
 }
 
 data "aws_ami" "ubuntu" {
@@ -17,11 +25,12 @@ data "aws_ami" "ubuntu" {
 }
 
 data "aws_ami" "windows" {
+  for_each    = local.windows_versions
   most_recent = true
   owners      = ["amazon"]
   filter {
     name   = "name"
-    values = ["Windows_Server-${local.windows_version}-English-Full-Base-*"]
+    values = ["Windows_Server-${each.key}-English-Full-Base-*"]
   }
   filter {
     name   = "virtualization-type"
@@ -40,7 +49,9 @@ resource "aws_instance" "host" {
   for_each = local.hosts
 
   ami = try(each.value.ami,
-    each.value.os == "windows" ? data.aws_ami.windows.id : data.aws_ami.ubuntu.id
+    each.value.os == "windows"
+    ? data.aws_ami.windows[local.host_windows_version[each.key]].id
+    : data.aws_ami.ubuntu.id
   )
   instance_type = try(each.value.instance_type,
     each.value.os == "windows"

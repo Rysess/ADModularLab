@@ -29,6 +29,7 @@ ROLE_DIR = {"dc": "dc", "member": "domain_member",
             "child_dc": "domain_child", "standalone": None}
 VALID_OS = {"windows", "linux"}
 VALID_PROTO = {"tcp", "udp"}
+VALID_EXPIRES_ACTION = {"stop", "terminate"}
 WINDOWS_VERSIONS = {"2016", "2019", "2022", "2025"}
 
 SUBNET = ipaddress.ip_network("10.0.1.0/24")
@@ -105,6 +106,15 @@ def check_lab(lab, problems):
     hours = lab.get("expires_hours", 168)
     if not isinstance(hours, int) or hours <= 0:
         problems.append(f"lab.expires_hours {hours!r} must be a positive integer")
+
+    action = lab.get("expires_action", "stop")
+    if action not in VALID_EXPIRES_ACTION:
+        problems.append(f"lab.expires_action {action!r} must be one of "
+                        f"{sorted(VALID_EXPIRES_ACTION)}")
+
+    enabled = lab.get("expires_enabled", True)
+    if not isinstance(enabled, bool):
+        problems.append(f"lab.expires_enabled {enabled!r} must be true or false")
 
 
 def check_defaults(defaults, problems):
@@ -289,6 +299,14 @@ def main():
         role = h.get("role", "standalone")
         if role not in ROLE_DIR:
             problems.append(f"{name}: unknown role {role!r}")
+
+        win = h.get("windows_version")
+        if win is not None:
+            if host_os != "windows":
+                problems.append(f"{name}: windows_version is only valid on a windows host")
+            elif str(win) not in WINDOWS_VERSIONS:
+                problems.append(f"{name}: windows_version {win!r} must be one of "
+                                f"{sorted(WINDOWS_VERSIONS)}")
 
         ami = h.get("ami")
         if ami is not None and not AMI_RE.match(str(ami)):

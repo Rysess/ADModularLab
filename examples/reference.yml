@@ -22,8 +22,12 @@ lab:
   domain_admin: john.john
   domain_admin_display: John John
 
-  # Hours until the ExpiresAt tag, for a reaper to act on. Default 168.
+  # Hours until the ExpiresAt tag. An hourly Lambda acts on it. Default 168.
   expires_hours: 24
+  # stop or terminate. Default stop.
+  expires_action: stop
+  # false deploys no expiry Lambda. Default true.
+  expires_enabled: true
 
   # Leave IMDSv1 reachable instead of requiring IMDSv2. Default false.
   imdsv1_enabled: false
@@ -107,15 +111,26 @@ hosts:
         vars:
           # Anything beyond Domain Admins is the misconfiguration.
           laps_read_principals: [Domain Users]
-      - edr_agent
+      # Exclusions are opt-in; an agent monitors everything by default.
+      - name: edr_agent
+        vars:
+          edr_agent_excluded_dirs: ['C:\excluded']
 
   - name: srv-child
     os: windows
     role: member
     instance_type: t3.small
     private_ip: 10.0.1.50
+    # Overrides defaults.windows_version for this host only.
+    windows_version: "2019"
     vars:
       domain_name: child.lab.local
+    modules:
+      # For a host with no EDR. Excluded dirs are created either way.
+      - name: defender
+        vars:
+          defender_enabled: false
+          defender_excluded_dirs: ['C:\excluded']
 
   # --- certificate authority --------------------------------------------
   # Deliberately a member server, not the DC: relaying a coerced DC to a CA on

@@ -5,7 +5,7 @@ lab:
   domain: lab.local
   domain_admin: john.john
   domain_admin_display: John John
-  expires_hours: 12
+  expires_hours: 168
 
 defaults:
   windows_instance_type: t3.large
