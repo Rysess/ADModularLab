@@ -1,0 +1,78 @@
+---
+# Users, groups, OUs and logon rights. Shows the identity module (who exists)
+# and the logon module (who may sign in where). About $0.11/hour.
+#
+#   LAB_FILE=examples/identity.yml ./run.sh
+
+lab:
+  name: identity-lab
+  region: eu-west-3
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 24
+
+defaults:
+  windows_instance_type: t3.medium
+  windows_disk_gb: 50
+  windows_version: "2022"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    domain: lab.local
+    instance_type: t3.medium
+    private_ip: 10.0.1.10
+    modules:
+      # Users and groups are maps keyed by sAMAccountName (the login). A group's
+      # value is its member list; a user's value is its display name, or a
+      # mapping for more. Omit the vars entirely for a default ten-group chart.
+      - name: identity
+        vars:
+          # OUs are created on demand from a user's or group's 'ou'; list here
+          # only OUs nothing else references. 'Parent/Child' nests.
+          identity_ous:
+            - Tier0
+            - Tier0/Admins
+            - Servers
+          identity_groups:
+            # Short form: name -> members. A member is a user or another group.
+            Server-Admins: [alice]
+            Helpdesk: [bob, Server-Admins]
+            # Long form adds description, scope, category or ou.
+            Tier0-Admins:
+              ou: Tier0/Admins
+              scope: universal        # global (default), domainlocal, universal
+              description: Forest administrators
+              members: [alice]
+            # Built-ins work as keys too and are populated, not recreated.
+            Domain Admins: [alice]
+          identity_users:
+            alice:
+              display: Alice Martin
+              ou: Tier0/Admins
+            bob: Bob Reyes             # short form: just a display name
+            svc_app:
+              display: App Service
+              ou: Servers
+              password: Summer2025!    # defaults to the lab user password
+
+  - name: srv-win01
+    os: windows
+    role: member
+    domain: lab.local
+    instance_type: t3.small
+    private_ip: 10.0.1.40
+    expose_ports:
+      - { port: 3389, proto: tcp }   # RDP from the operator's IP
+    modules:
+      # Who may log on here. Bare names resolve locally first, then in the
+      # domain. An allow right (interactive/batch) is left at its Windows
+      # default while empty and replaced outright once set; deny beats allow.
+      - name: logon
+        vars:
+          logon_admins: [Server-Admins]        # local Administrators
+          logon_rdp: [Helpdesk]                # local Remote Desktop Users
+          logon_interactive: [Server-Admins]   # replaces the right; drops Users
+          # Keep tier-0 accounts off this tier-1 host (also blocks WinRM/SMB).
+          logon_deny_network: [Tier0-Admins]

@@ -1,0 +1,51 @@
+---
+# Data and services: gMSA accounts, SMB shares of synthetic loot, SQL Server,
+# and Defender with an exclusion. A credential-hunting playground. ~$0.14/hour.
+#
+#   LAB_FILE=examples/services.yml ./run.sh
+
+lab:
+  name: services-lab
+  region: eu-west-3
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 24
+
+defaults:
+  windows_instance_type: t3.medium
+  windows_disk_gb: 50
+  windows_version: "2022"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    domain: lab.local
+    instance_type: t3.medium
+    private_ip: 10.0.1.10
+    modules:
+      # Fills the AD groups the shares below are ACL'd to (default org chart).
+      - identity
+      # KDS root keys and gMSA accounts; each account bound to its own root key.
+      - name: gmsa
+        vars:
+          gmsa_count: 4
+          gmsa_name_prefix: gmsa
+
+  - name: srv-win01
+    os: windows
+    role: member
+    domain: lab.local
+    instance_type: t3.medium   # sql_server needs >= t3.medium
+    private_ip: 10.0.1.40
+    modules:
+      # SMB shares of fabricated secrets behind per-group NTFS ACLs.
+      - shares
+      # SQL Server Express with a demo database and a service login.
+      - sql_server
+      # Defender left on, with a directory it does not scan (a classic
+      # exclusion an attacker would stage tools in).
+      - name: defender
+        vars:
+          defender_enabled: true
+          defender_excluded_dirs: ['C:\excluded']

@@ -9,3 +9,7 @@ edr_agent_fleet_port: 8220
 edr_agent_wait_retries: 90
 edr_agent_wait_delay: 20
 edr_agent_fleet_wait_timeout: 900
+
+# Opt-in. Any directory listed is created on the host and registered as an
+# Elastic Defend trusted-app entry.
+edr_agent_excluded_dirs: []

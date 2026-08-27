@@ -1,3 +1,9 @@
+# The first AZ the account can actually use in this region, rather than assuming
+# "<region>a" exists (it may not in 2-AZ or opt-in regions).
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
 resource "aws_vpc" "lab" {
   cidr_block           = local.vpc_cidr
   enable_dns_hostnames = true
@@ -9,7 +15,7 @@ resource "aws_subnet" "lab" {
   vpc_id                  = aws_vpc.lab.id
   cidr_block              = local.subnet_cidr
   map_public_ip_on_launch = true
-  availability_zone       = "${local.lab.region}a"
+  availability_zone       = data.aws_availability_zones.available.names[0]
   tags                    = merge(local.lab_tags, { Name = "${local.lab.name}-subnet" })
 }
 

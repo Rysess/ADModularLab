@@ -1,0 +1,71 @@
+---
+# Read-only. Reports the interactive and RDP sessions open on each Windows host.
+#   ./sessions.sh
+- name: Collect logon sessions
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: Enumerate interactive and RDP sessions
+      ansible.windows.win_powershell:
+        script: |
+          Set-StrictMode -Version Latest
+          $Ansible.Changed = $false
+
+          # 2 console, 10 RDP, 11 cached (RDP after the DC is unreachable).
+          $labels = @{ 2 = 'console'; 10 = 'rdp'; 11 = 'cached' }
+
+          $byId = @{}
+          foreach ($s in Get-CimInstance Win32_LogonSession) {
+              if ($labels.ContainsKey([int]$s.LogonType)) { $byId[$s.LogonId] = $s }
+          }
+
+          $seen = @{}
+          foreach ($link in Get-CimInstance Win32_LoggedOnUser) {
+              $s = $byId[$link.Dependent.LogonId]
+              if (-not $s) { continue }
+              $acct = $link.Antecedent
+              if ($acct.Name -match '^(SYSTEM|LOCAL SERVICE|NETWORK SERVICE|DWM-\d+|UMFD-\d+|ANONYMOUS LOGON)$') { continue }
+              $who = if ($acct.Domain) { "$($acct.Domain)\$($acct.Name)" } else { $acct.Name }
+              $type = $labels[[int]$s.LogonType]
+              $since = if ($s.StartTime) { $s.StartTime.ToString('yyyy-MM-dd HH:mm') } else { '' }
+              # One logon can span several sessions of the same kind; collapse them.
+              $key = "$who|$type|$since"
+              if ($seen.ContainsKey($key)) { continue }
+              $seen[$key] = $true
+              [pscustomobject]@{ user = $who; type = $type; since = $since }
+          }
+      register: sessions_raw
+      changed_when: false
+
+    - name: Tag each session with its host
+      ansible.builtin.set_fact:
+        host_sessions: >-
+          {{ sessions_raw.output | default([])
+             | map('combine', {'host': inventory_hostname}) | list }}
+
+- name: Report
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Gather every host's sessions
+      ansible.builtin.set_fact:
+        all_sessions: >-
+          {{ groups['windows'] | default([])
+             | map('extract', hostvars, 'host_sessions')
+             | select('defined') | sum(start=[])
+             | sort(attribute='host,user') }}
+
+    - name: Build the report
+      ansible.builtin.set_fact:
+        session_lines: >-
+          {{ session_lines | default([])
+             + ['%-14s %-26s %-8s %s' | format(item.host, item.user, item.type, item.since)] }}
+      loop: "{{ all_sessions }}"
+      loop_control:
+        label: "{{ item.host }}"
+
+    - name: Print
+      ansible.builtin.debug:
+        msg: >-
+          {{ (['%-14s %-26s %-8s %s' | format('HOST', 'USER', 'TYPE', 'SINCE')] + session_lines)
+             if all_sessions else ['no interactive or RDP sessions open'] }}

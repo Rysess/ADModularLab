@@ -1,0 +1,35 @@
+---
+identity_domain: "{{ domain_name }}"
+identity_domain_dn: "DC={{ identity_domain.split('.') | join(',DC=') }}"
+
+identity_ad_retries: 5
+identity_ad_delay: 10
+
+# on_create leaves an existing user's password alone; set 'always' to make a
+# password edited in lab.yml take on the next run.
+identity_update_password: on_create
+
+# The key is the sAMAccountName (login); the value is the display name, or a
+# mapping of display, description, firstname, surname, email, password, enabled,
+# ou. password defaults to the lab user password. Group membership is set only
+# through identity_groups below, including built-ins (Domain Admins: [alice]).
+identity_users: {}
+
+# name: member list, or a mapping of members, description, scope, category, ou.
+# A member is a user or another group. Naming a group AD already has, built-in
+# or not, adds to it rather than replacing it.
+identity_groups:
+  Auditors: [LabUser10]
+  Finance-Team: [LabUser1, Auditors]
+  IT-Admins: [LabUser2, Auditors]
+  Backup-Admins: [LabUser3, Auditors]
+  DevOps: [LabUser4, Auditors]
+  Server-Admins: [LabUser9, Auditors]
+  Management: [LabUser5]
+  HR: [LabUser6]
+  Helpdesk: [LabUser7]
+  Security-Team: [LabUser8]
+
+# Only for OUs nothing else references; 'ou' on a user or group creates its
+# path, parents included.
+identity_ous: []

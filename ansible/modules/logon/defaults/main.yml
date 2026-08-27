@@ -1,0 +1,29 @@
+---
+# Bare names are looked up locally first, then in the domain, so domain groups
+# can be written plainly. Prefix a local principal with .\ or BUILTIN\.
+
+# Local group membership.
+logon_admins: []
+logon_rdp: []
+
+# User rights. An empty list leaves the right at its Windows default; a
+# non-empty one replaces it outright.
+logon_interactive: []
+logon_batch: []
+logon_deny_interactive: []
+logon_deny_rdp: []
+logon_deny_network: []
+
+# Kept in every allow list so the console stays reachable.
+logon_keep_administrators: true
+
+logon_local_groups:
+  - { name: Administrators, members: "{{ logon_admins }}" }
+  - { name: Remote Desktop Users, members: "{{ logon_rdp }}" }
+
+logon_rights:
+  - { name: SeInteractiveLogonRight, users: "{{ logon_interactive }}", keep: true }
+  - { name: SeBatchLogonRight, users: "{{ logon_batch }}", keep: true }
+  - { name: SeDenyInteractiveLogonRight, users: "{{ logon_deny_interactive }}", keep: false }
+  - { name: SeDenyRemoteInteractiveLogonRight, users: "{{ logon_deny_rdp }}", keep: false }
+  - { name: SeDenyNetworkLogonRight, users: "{{ logon_deny_network }}", keep: false }

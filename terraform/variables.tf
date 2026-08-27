@@ -24,3 +24,9 @@ variable "operator_cidrs" {
     error_message = "Refusing 0.0.0.0/0: the lab exposes WinRM and RDP and runs deliberately weak AD configurations."
   }
 }
+
+variable "deploy_stamp" {
+  description = "Set by run.sh to the current epoch so each deploy resets the expiry lease to now + expires_hours. Empty keeps the existing lease (raw terraform apply)."
+  type        = string
+  default     = ""
+}

@@ -162,6 +162,9 @@
           $outFile = Join-Path $Workdir 'agent.out'
           $errFile = Join-Path $Workdir 'agent.err'
 
+          # Returns one object: anything written to the output stream inside a
+          # function becomes part of its return value, so the transcript cannot
+          # be emitted here without being mistaken for the exit code.
           function Invoke-Agent($Path, $Arguments) {
               $p = Start-Process -FilePath $Path -ArgumentList $Arguments `
                   -NoNewWindow -Wait -PassThru `
@@ -170,16 +173,19 @@
                   (Get-Content -Path $outFile -Raw -ErrorAction SilentlyContinue)
                   (Get-Content -Path $errFile -Raw -ErrorAction SilentlyContinue)
               ) -join "`n"
-              Write-Output ($text -replace [regex]::Escape($token), '<token>')
-              return $p.ExitCode
+              [pscustomobject]@{
+                  ExitCode = $p.ExitCode
+                  Output   = $text -replace [regex]::Escape($token), '<token>'
+              }
           }
 
           if ($Action -eq 'reinstall') {
               Write-Output '--- uninstalling the unenrolled agent ---'
-              $rc = Invoke-Agent $Exe @('uninstall', '-f')
-              if ($rc -ne 0) {
+              $r = Invoke-Agent $Exe @('uninstall', '-f')
+              Write-Output $r.Output
+              if ($r.ExitCode -ne 0) {
                   $Ansible.Failed = $true
-                  Write-Output "uninstall exit code: $rc"
+                  Write-Output "uninstall exit code: $($r.ExitCode)"
                   return
               }
           }
@@ -193,10 +199,51 @@
           }
 
           Write-Output '--- installing ---'
-          $rc = Invoke-Agent (Join-Path $dir.FullName 'elastic-agent.exe') `
+          $r = Invoke-Agent (Join-Path $dir.FullName 'elastic-agent.exe') `
               @('install', "--url=$FleetUrl", "--enrollment-token=$token", '--insecure', '-f')
-          Write-Output "action: $Action, exit code: $rc"
+          Write-Output $r.Output
+          Write-Output "action: $Action, exit code: $($r.ExitCode)"
 
           Remove-Item -Path $outFile, $errFile -Force -ErrorAction SilentlyContinue
-          if ($rc -ne 0) { $Ansible.Failed = $true }
+          if ($r.ExitCode -ne 0) { $Ansible.Failed = $true }
           $Ansible.Changed = $true
+
+- name: Create the excluded directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop: "{{ edr_agent_excluded_dirs }}"
+
+# Registered against Defend's trusted applications list, which is agnostic and
+# applies to every policy, so the entry is created once per lab.
+- name: Exclude the directories from Elastic Defend
+  ansible.windows.win_uri:
+    url: "https://{{ elastic_private_ip }}:{{ edr_agent_kibana_port }}/api/exception_lists/items"
+    method: POST
+    url_username: elastic
+    url_password: "{{ elastic_password }}"
+    force_basic_auth: true
+    validate_certs: false
+    headers:
+      kbn-xsrf: "true"
+    # win_uri has no body_format; a dict body is serialised to JSON already.
+    content_type: application/json
+    body:
+      list_id: endpoint_trusted_apps
+      item_id: "lab-excluded-{{ item | hash('md5') }}"
+      namespace_type: agnostic
+      name: "Lab excluded directory {{ item }}"
+      description: Deliberately unmonitored path.
+      type: simple
+      os_types: [windows]
+      tags: ["policy:all"]
+      entries:
+        - field: process.executable.caseless
+          operator: included
+          type: wildcard
+          value: "{{ item }}\\*"
+    # 409 = the entry already exists.
+    status_code: [200, 409]
+  loop: "{{ edr_agent_excluded_dirs }}"
+  register: edr_agent_exclusion
+  changed_when: edr_agent_exclusion.status_code == 200

@@ -1,6 +1,8 @@
 ---
-domain_child_parent_domain: "{{ domain_name }}"
-domain_child_domain: "child.{{ domain_child_parent_domain }}"
+# domain_name is the domain this host serves, as on every other host. The
+# parent is that domain minus its first label.
+domain_child_domain: "{{ domain_name }}"
+domain_child_parent_domain: "{{ domain_name.split('.')[1:] | join('.') }}"
 domain_child_parent_host: "{{ dc_hosts_by_domain[domain_child_parent_domain] }}"
 
 # UPN, not NETBIOS\user: Install-ADDSDomain resolves the credential's domain

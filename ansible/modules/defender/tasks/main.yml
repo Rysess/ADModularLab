@@ -1,0 +1,73 @@
+---
+- name: Create the excluded directories
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: directory
+  loop: "{{ defender_excluded_dirs }}"
+
+- name: Set the Windows Defender feature
+  ansible.windows.win_feature:
+    name: Windows-Defender
+    state: "{{ 'present' if defender_enabled | bool else 'absent' }}"
+  register: defender_feature
+
+- name: Reboot if the feature change asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: defender_feature.reboot_required
+
+- name: Apply the Defender exclusions
+  when: defender_enabled | bool
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Paths: "{{ defender_excluded_dirs }}"
+      Extensions: "{{ defender_exclusion_extensions }}"
+      Processes: "{{ defender_exclusion_processes }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [AllowEmptyCollection()][string[]]$Paths,
+        [AllowEmptyCollection()][string[]]$Extensions,
+        [AllowEmptyCollection()][string[]]$Processes
+      )
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      $want = @{
+          ExclusionPath      = $Paths
+          ExclusionExtension = $Extensions
+          ExclusionProcess   = $Processes
+      }
+
+      foreach ($kind in $want.Keys) {
+          $current = @((Get-MpPreference).$kind)
+          foreach ($value in $want[$kind]) {
+              if ($current -contains $value) { continue }
+              # Splatted: -$kind is not a parameter name PowerShell accepts.
+              $splat = @{ $kind = $value }
+              Add-MpPreference @splat
+              Write-Output "added $kind $value"
+              $Ansible.Changed = $true
+          }
+      }
+
+      # Read back rather than trusting the add, so a silent no-op fails loudly.
+      $now = Get-MpPreference
+      foreach ($kind in $want.Keys) {
+          $have = @($now.$kind)
+          "$kind : $($have -join ', ')"
+          foreach ($value in $want[$kind]) {
+              if ($have -notcontains $value) {
+                  Write-Output "$kind $value was not applied"
+                  $Ansible.Failed = $true
+              }
+          }
+      }
+  register: defender_exclusions
+
+- name: Report the exclusions
+  ansible.builtin.debug:
+    var: defender_exclusions.output
+  when: defender_enabled | bool

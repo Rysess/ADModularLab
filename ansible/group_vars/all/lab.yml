@@ -1,16 +1,18 @@
 ---
-# Domain -> the DC serving it. Keyed on domain rather than inventory order,
-# which is arbitrary once a lab holds several.
-dc_hosts_by_domain: >-
-  {{ dict(groups['role_dc'] | default([])
-          | map('extract', hostvars, 'domain_name')
-          | zip(groups['role_dc'] | default([])))
-     | combine(dict(groups['role_child_dc'] | default([])
-          | map('extract', hostvars, 'domain_child_domain')
-          | zip(groups['role_child_dc'] | default([])))) }}
+# Every host that promotes a domain: forest roots and child domains alike.
+all_dc_hosts: "{{ (groups['role_dc'] | default([])) + (groups['role_child_dc'] | default([])) }}"
 
+# The domain each of those controllers serves, in the same order.
+all_dc_domains: "{{ all_dc_hosts | map('extract', hostvars, 'domain_name') | list }}"
+
+# domain name -> the controller serving it, e.g. {'lab.local': 'dc01'}.
+dc_hosts_by_domain: "{{ dict(all_dc_domains | zip(all_dc_hosts)) }}"
+
+# The controller for this host's own domain. A host with no domain (a standalone
+# vpn box) falls back to the only controller; declare 'domain' on it to choose
+# in a multi-domain lab.
 domain_dc_host: >-
-  {{ dc_hosts_by_domain.get(domain_name,
+  {{ dc_hosts_by_domain.get(domain_name | default(''),
        groups['role_dc'] | default([]) | first | default('')) }}
 
 dc_private_ip: "{{ hostvars[domain_dc_host].private_ip if domain_dc_host else '' }}"
@@ -20,3 +22,7 @@ elastic_private_ip: "{{ groups['mod_edr_server'] | default([]) | map('extract', 
 domain_netbios: "{{ domain_name.split('.')[0] | upper }}"
 
 child_dc_user: svc_childdc
+
+# Applied to controllers ahead of every other module, because modules on other
+# hosts name the principals these create.
+staged_modules: [identity]

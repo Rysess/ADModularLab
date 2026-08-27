@@ -14,16 +14,16 @@ lab:
 
   region: eu-west-3
 
-  # Forest root domain. The first label becomes the NetBIOS name, so it must be
-  # 15 characters or fewer.
-  domain: lab.local
-
   # sAMAccountName of the lab's domain admin, 20 characters or fewer.
   domain_admin: john.john
   domain_admin_display: John John
 
-  # Hours until the ExpiresAt tag, for a reaper to act on. Default 168.
+  # Hours until the ExpiresAt tag. An hourly Lambda acts on it. Default 168.
   expires_hours: 24
+  # terminate (default) deletes the lab; stop just halts compute and keeps disks.
+  expires_action: stop
+  # false deploys no expiry Lambda. Default true.
+  expires_enabled: true
 
   # Leave IMDSv1 reachable instead of requiring IMDSv2. Default false.
   imdsv1_enabled: false
@@ -35,6 +35,8 @@ defaults:
   linux_disk_gb: 8
   # 2016, 2019, 2022 or 2025. Default 2022.
   windows_version: "2022"
+  # full = Desktop Experience, core = no desktop shell. Default full.
+  windows_edition: full
   # Default 22.04.
   ubuntu_release: "22.04"
 
@@ -46,11 +48,41 @@ hosts:
     instance_type: t3.medium
     disk_gb: 50
     private_ip: 10.0.1.10
-    vars:
-      domain_name: lab.local
+    # The domain this host serves or joins. Required on every dc, child_dc
+    # and member.
+    domain: lab.local
     modules:
       # A module is either a bare name ...
       - gmsa
+      # Domain users, groups and OUs. Runs on the controller that serves the
+      # domain, ahead of every other module, so other hosts can name what it
+      # creates. Omit the vars for the default ten-group org chart.
+      - name: identity
+        vars:
+          # A group is a name mapped to its members; a member is a user or
+          # another group. Omit this whole block for the default org chart.
+          identity_groups:
+            Server-Admins: [alice]
+            Helpdesk: [bob, Server-Admins]
+            # The long form adds description, scope, category or ou.
+            Tier0-Admins:
+              ou: Tier0/Admins       # created on demand, parents included
+              scope: universal       # global (default), domainlocal, universal
+              description: Forest administrators
+              members: [alice]
+          # A user is a name mapped to a display name, or to a mapping adding
+          # description, firstname/surname, email, password, enabled, ou,
+          # groups. The key is the sAMAccountName (login); the value is only
+          # the display name. Groups above reference the key, not the display
+          # name. Password defaults to the lab user password.
+          identity_users:
+            bob: Bob Reyes
+            alice:
+              display: Alice Martin
+              ou: Tier0/Admins
+            svc_sql:
+              display: SQL Service
+              password: Summer2025!
       # ... or a mapping carrying variables for that module on that host.
       - name: vulns
         vars:
@@ -60,6 +92,12 @@ hosts:
           vulns_rbcd: false
           vulns_dcsync: true
           vulns_dcsync_principals: [LabUser5]
+      # Grant AD rights between principals (the ACEs BloodHound reports).
+      - name: acl
+        vars:
+          acl_grants:
+            - { principal: Helpdesk, target: Tier0-Admins, right: GenericAll }
+            - { principal: Server-Admins, target: alice, right: GenericWrite }
       - name: trust
         vars:
           trust_partners:
@@ -72,8 +110,7 @@ hosts:
     os: windows
     role: dc
     private_ip: 10.0.1.20
-    vars:
-      domain_name: partner.local
+    domain: partner.local
     modules:
       - name: trust
         vars:
@@ -83,14 +120,13 @@ hosts:
               direction: bidirectional
 
   # --- child domain -----------------------------------------------------
-  # domain_name is the parent; serves child.<parent> unless
-  # domain_child_domain says otherwise. The parent-child trust is automatic.
+  # The parent is the domain minus its first label, so this is a child of
+  # lab.local. The parent-child trust comes with the promotion.
   - name: dc-child
     os: windows
     role: child_dc
     private_ip: 10.0.1.30
-    vars:
-      domain_name: lab.local
+    domain: child.lab.local
 
   # --- member server ----------------------------------------------------
   - name: srv-win01
@@ -98,8 +134,7 @@ hosts:
     role: member
     instance_type: t3.medium
     private_ip: 10.0.1.40
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - shares
       - sql_server
@@ -107,15 +142,41 @@ hosts:
         vars:
           # Anything beyond Domain Admins is the misconfiguration.
           laps_read_principals: [Domain Users]
-      - edr_agent
+      # Exclusions are opt-in; an agent monitors everything by default.
+      - name: edr_agent
+        vars:
+          edr_agent_excluded_dirs: ['C:\excluded']
+      # Who may log on here. Bare names resolve locally first, then in the
+      # domain; prefix a local principal with .\ or BUILTIN\.
+      - name: logon
+        vars:
+          logon_admins: [Server-Admins]      # local Administrators
+          logon_rdp: [Helpdesk]              # local Remote Desktop Users
+          # An empty right keeps its Windows default; a non-empty one
+          # replaces it, so this drops BUILTIN\Users and with it every
+          # domain user's console logon.
+          logon_interactive: [Server-Admins]
+          # Deny beats allow. deny_network blocks WinRM and SMB too, which is
+          # how tier-0 accounts are kept off tier-1 hosts.
+          logon_deny_network: [Domain Admins]
+          logon_deny_rdp: [Finance-Team]
 
   - name: srv-child
     os: windows
     role: member
     instance_type: t3.small
     private_ip: 10.0.1.50
-    vars:
-      domain_name: child.lab.local
+    # Both override the defaults for this host only. Core has no desktop
+    # shell, so it runs on a smaller instance.
+    windows_version: "2019"
+    windows_edition: core
+    domain: child.lab.local
+    modules:
+      # For a host with no EDR. Excluded dirs are created either way.
+      - name: defender
+        vars:
+          defender_enabled: false
+          defender_excluded_dirs: ['C:\excluded']
 
   # --- certificate authority --------------------------------------------
   # Deliberately a member server, not the DC: relaying a coerced DC to a CA on
@@ -124,8 +185,7 @@ hosts:
     os: windows
     role: member
     private_ip: 10.0.1.60
-    vars:
-      domain_name: lab.local
+    domain: lab.local
     modules:
       - name: adcs
         vars:
@@ -155,7 +215,10 @@ hosts:
     expose_ports:
       - { port: 1194, proto: udp }
     modules:
-      - vpn
+      # One profile per client; omit vpn_clients for a single client1.ovpn.
+      - name: vpn
+        vars:
+          vpn_clients: [alice, bob]
 
   # --- rebuilt from a snapshot ------------------------------------------
   # ./snapshot.sh writes an AMI per instance; setting ami: here rebuilds from

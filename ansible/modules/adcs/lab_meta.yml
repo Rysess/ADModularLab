@@ -1,3 +1,4 @@
 os: windows
 min_instance_type: t3.medium
+min_instance_type_core: t3.small
 requires_lab_role: dc

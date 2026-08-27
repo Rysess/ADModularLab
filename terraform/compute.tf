@@ -1,6 +1,30 @@
 locals {
-  windows_version = tostring(try(local.defaults.windows_version, "2022"))
-  ubuntu_release  = tostring(try(local.defaults.ubuntu_release, "22.04"))
+  ubuntu_release = tostring(try(local.defaults.ubuntu_release, "22.04"))
+
+  # Per host, falling back to the lab default. One AMI lookup per
+  # version+edition in use, so a lab can mix 2019/2022/2025 and Full/Core.
+  host_windows_version = {
+    for k, h in local.hosts : k => tostring(try(
+      h.windows_version, local.defaults.windows_version, "2022"
+    ))
+  }
+  host_windows_edition = {
+    for k, h in local.hosts : k => tostring(try(
+      h.windows_edition, local.defaults.windows_edition, "full"
+    ))
+  }
+  # "Full" is Desktop Experience, "Core" has no desktop shell. distinct() first:
+  # hosts sharing a version and edition would collide as duplicate map keys.
+  windows_image_keys = distinct([
+    for k, h in local.windows_hosts :
+    "${local.host_windows_version[k]}-${local.host_windows_edition[k]}"
+  ])
+  windows_images = {
+    for key in local.windows_image_keys : key => {
+      version = split("-", key)[0]
+      edition = title(split("-", key)[1])
+    }
+  }
 }
 
 data "aws_ami" "ubuntu" {
@@ -17,11 +41,12 @@ data "aws_ami" "ubuntu" {
 }
 
 data "aws_ami" "windows" {
+  for_each    = local.windows_images
   most_recent = true
   owners      = ["amazon"]
   filter {
     name   = "name"
-    values = ["Windows_Server-${local.windows_version}-English-Full-Base-*"]
+    values = ["Windows_Server-${each.value.version}-English-${each.value.edition}-Base-*"]
   }
   filter {
     name   = "virtualization-type"
@@ -40,7 +65,9 @@ resource "aws_instance" "host" {
   for_each = local.hosts
 
   ami = try(each.value.ami,
-    each.value.os == "windows" ? data.aws_ami.windows.id : data.aws_ami.ubuntu.id
+    each.value.os == "windows"
+    ? data.aws_ami.windows["${local.host_windows_version[each.key]}-${local.host_windows_edition[each.key]}"].id
+    : data.aws_ami.ubuntu.id
   )
   instance_type = try(each.value.instance_type,
     each.value.os == "windows"

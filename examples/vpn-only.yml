@@ -7,7 +7,6 @@
 lab:
   name: vpn-only-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   expires_hours: 24
 
@@ -26,4 +25,8 @@ hosts:
     expose_ports:
       - { port: 1194, proto: udp }
     modules:
-      - vpn
+      # One profile per name -> ansible/alice.ovpn, ansible/bob.ovpn. Omit
+      # vpn_clients for a single ansible/client1.ovpn.
+      - name: vpn
+        vars:
+          vpn_clients: [alice, bob]

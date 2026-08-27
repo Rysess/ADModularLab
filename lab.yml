@@ -1,17 +1,16 @@
 ---
 lab:
-  name: adshares-lab
+  name: ad-lab
   region: eu-west-3
-  domain: lab.local
   domain_admin: john.john
   domain_admin_display: John John
-  expires_hours: 12
+  expires_hours: 168
 
 defaults:
   windows_instance_type: t3.large
-  linux_instance_type: t3.large
+  linux_instance_type: t3.nano
   windows_disk_gb: 50
-  linux_disk_gb: 50
+  linux_disk_gb: 8
   windows_version: "2022"
   ubuntu_release: "22.04"
 
@@ -19,17 +18,24 @@ hosts:
   - name: dc01
     os: windows
     role: dc
+    domain: lab.local
     instance_type: t3.large
     private_ip: 10.0.1.10
     modules:
+      - identity
       - gmsa
 
   - name: srv-win01
     os: windows
     role: member
+    domain: lab.local
     instance_type: t3.medium
     modules:
       - shares
+      - name: logon
+        vars:
+          logon_rdp: [IT-Admins, Helpdesk]
+          logon_deny_rdp: [Finance-Team]
 
   - name: vpn01
     os: linux

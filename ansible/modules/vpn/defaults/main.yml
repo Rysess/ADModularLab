@@ -2,7 +2,11 @@
 vpn_port: 1194
 vpn_proto: udp
 vpn_cipher: AES-256-GCM
+
+# One profile is generated per name here. vpn_client_name seeds the default so a
+# lab that sets neither still gets a single client1.ovpn.
 vpn_client_name: client1
+vpn_clients: ["{{ vpn_client_name }}"]
 
 vpn_easyrsa_dir: /etc/openvpn/easy-rsa
 vpn_server_dir: /etc/openvpn/server
@@ -13,5 +17,6 @@ vpn_easyrsa_algo: ec
 vpn_easyrsa_curve: prime256v1
 vpn_ca_cn: lab-ovpn-ca
 
-# Where the generated profile lands on the operator's machine.
-vpn_profile_dest: "{{ playbook_dir }}/{{ vpn_client_name }}.ovpn"
+# Where the generated profiles land on the operator's machine: one
+# <client>.ovpn per name in vpn_clients.
+vpn_profile_dir: "{{ playbook_dir }}"

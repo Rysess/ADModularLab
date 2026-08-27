@@ -9,7 +9,6 @@ locals {
   }
 
   lab_secrets = {
-    domain_name          = local.lab.domain
     domain_admin_user    = local.lab.domain_admin
     domain_admin_display = try(local.lab.domain_admin_display, local.lab.domain_admin)
     domain_admin_pw      = random_password.lab["domain_admin"].result
@@ -53,29 +52,13 @@ resource "local_file" "lab_facts" {
 }
 
 locals {
-  host_domain = {
-    for k, h in local.hosts : k => try(h.vars.domain_name, local.lab.domain)
-  }
-
-  # Written to host_vars so every host can resolve which DC serves a domain,
-  # not just the child itself.
-  host_child_domain = {
-    for k, h in local.hosts : k => try(
-      h.vars.domain_child_domain,
-      "child.${local.host_domain[k]}"
-    ) if try(h.role, "") == "child_dc"
-  }
-
   # ansible_password must be a host var: under delegate_to a group_vars
   # template keyed on inventory_hostname resolves to the wrong host.
   host_vars = {
     for k, h in local.hosts : k => merge(
       local.host_module_vars[k],
       try(h.vars, {}),
-      { domain_name = local.host_domain[k] },
-      contains(keys(local.host_child_domain), k)
-      ? { domain_child_domain = local.host_child_domain[k] }
-      : {},
+      try({ domain_name = h.domain }, {}),
       h.os == "windows" ? { ansible_password = local.windows_admin_passwords[k] } : {}
     )
   }

@@ -1,0 +1,23 @@
+---
+- name: Populate local groups
+  ansible.windows.win_group_membership:
+    name: "{{ item.name }}"
+    members: "{{ item.members }}"
+    state: present
+  loop: "{{ logon_local_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.members | length > 0
+
+- name: Assign logon rights
+  ansible.windows.win_user_right:
+    name: "{{ item.name }}"
+    users: >-
+      {{ (item.users + (['BUILTIN\\Administrators']
+                        if item.keep and logon_keep_administrators else []))
+         | unique }}
+    action: set
+  loop: "{{ logon_rights }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.users | length > 0

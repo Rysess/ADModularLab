@@ -23,7 +23,8 @@ fi
 
 cd "$HERE/terraform"
 terraform init -input=false
-terraform apply -auto-approve -input=false -var "lab_file=../$LAB_FILE"
+terraform apply -auto-approve -input=false \
+  -var "lab_file=../$LAB_FILE" -var "deploy_stamp=$(date -u +%s)"
 
 LAB_NAME="$(terraform output -raw lab_name)"
 AWS_REGION="$(terraform output -raw region)"
@@ -35,29 +36,49 @@ VPN_PUB="$(terraform output -raw vpn_public_ip)"
 cd "$HERE/ansible"
 ansible-playbook site.yml
 
-# Created first so the secrets never exist under the default umask.
+# Only the credentials the lab actually uses: a one-DC lab has no trust, SQL or
+# Elastic password to show.
 cd "$HERE/terraform"
+HOSTS_JSON="$(terraform output -json hosts)"
+has() { echo "$HOSTS_JSON" | jq -e "$1" >/dev/null; }
+has_role() { has "any(.[]; .role == \"$1\")"; }
+has_module() { has "any(.[]; .modules | index(\"$1\"))"; }
+has_os() { has "any(.[]; .os == \"$1\")"; }
+
+# Created first so the secrets never exist under the default umask.
 install -m 600 /dev/null "$CREDS"
 {
   echo "lab: $LAB_NAME ($AWS_REGION)"
   echo "expires: $(terraform output -raw expires_at)"
   echo
-  echo "domain admin password : $(terraform output -raw domain_admin_password)"
-  echo "dsrm password         : $(terraform output -raw dsrm_password)"
-  echo "lab user password     : $(terraform output -raw lab_user_password)"
-  echo "elastic password      : $(terraform output -raw elastic_password)"
-  echo "monitor password      : $(terraform output -raw monitor_password)"
-  echo "sql password          : $(terraform output -raw sql_password)"
-  echo "ssh key               : $(terraform output -raw ssh_private_key_path)"
+  if has_role dc || has_role child_dc; then
+    echo "domain admin password : $(terraform output -raw domain_admin_password)"
+    echo "dsrm password         : $(terraform output -raw dsrm_password)"
+    echo "lab user password     : $(terraform output -raw lab_user_password)"
+  fi
+  has_role child_dc  && echo "child dc password     : $(terraform output -raw child_dc_password)"
+  has_module trust   && echo "trust password        : $(terraform output -raw trust_password)"
+  has_module sql_server && echo "sql password          : $(terraform output -raw sql_password)"
+  if has_module edr_server; then
+    echo "elastic password      : $(terraform output -raw elastic_password)"
+    echo "monitor password      : $(terraform output -raw monitor_password)"
+  fi
+  has_os linux && echo "ssh key               : $(terraform output -raw ssh_private_key_path)"
+  if has_os windows; then
+    echo
+    echo "local Administrator passwords:"
+    terraform output -json windows_admin_passwords |
+      jq -r 'to_entries[] | "  \(.key): \(if .value == "" then "(from snapshot AMI, not published by EC2)" else .value end)"'
+  fi
   echo
-  echo "local Administrator passwords:"
-  terraform output -json windows_admin_passwords |
-    jq -r 'to_entries[] | "  \(.key): \(if .value == "" then "(from snapshot AMI, not published by EC2)" else .value end)"'
-  echo
-  echo "Access is over the VPN. Import ansible/client1.ovpn, then use the internal IPs below."
-  if [ -n "$VPN_PUB" ]; then echo "vpn endpoint: $VPN_PUB"; fi
+  if [ -n "$VPN_PUB" ]; then
+    echo "Access is over the VPN. Import ansible/client1.ovpn, then use the internal IPs below."
+    echo "vpn endpoint: $VPN_PUB"
+  else
+    echo "Access is from this machine's public IP over WinRM, RDP and SSH."
+  fi
   if [ -n "$ELASTIC_PRIV" ]; then echo "kibana: https://$ELASTIC_PRIV:5601 (user: elastic)"; fi
   echo
-  terraform output -json hosts |
+  echo "$HOSTS_JSON" |
     jq -r 'to_entries[] | "  \(.key): \(.value.private_ip) role=\(.value.role) modules=\(.value.modules|join(","))"'
 } | tee "$CREDS"
