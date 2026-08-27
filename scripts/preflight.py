@@ -30,13 +30,16 @@ ROLE_DIR = {"dc": "dc", "member": "domain_member",
 VALID_OS = {"windows", "linux"}
 VALID_PROTO = {"tcp", "udp"}
 VPN_CLIENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+VALID_ACL_RIGHTS = {"GenericAll", "GenericWrite", "WriteDacl", "WriteOwner",
+                    "WriteProperty", "ReadProperty", "Self", "ExtendedRight"}
+VALID_ACL_ACCESS = {"Allow", "Deny"}
 VALID_EXPIRES_ACTION = {"stop", "terminate"}
 WINDOWS_VERSIONS = {"2016", "2019", "2022", "2025"}
 WINDOWS_EDITIONS = {"full", "core"}
 GROUP_SCOPES = {"global", "domainlocal", "universal"}
 GROUP_CATEGORIES = {"security", "distribution"}
 IDENTITY_USER_KEYS = {"display", "description", "firstname", "surname",
-                      "email", "password", "enabled", "groups", "ou"}
+                      "email", "password", "enabled", "ou"}
 IDENTITY_GROUP_KEYS = {"description", "scope", "category", "members", "ou"}
 LOGON_LISTS = ("logon_admins", "logon_rdp", "logon_interactive", "logon_batch",
                "logon_deny_interactive", "logon_deny_rdp", "logon_deny_network")
@@ -154,7 +157,7 @@ def check_identity_vars(where, mv, problems, warns):
 
     scopes = {}
     for key, allowed, member_key in (("identity_groups", IDENTITY_GROUP_KEYS, "members"),
-                                     ("identity_users", IDENTITY_USER_KEYS, "groups")):
+                                     ("identity_users", IDENTITY_USER_KEYS, None)):
         entries = mv.get(key, {})
         if not isinstance(entries, dict):
             problems.append(f"{where}: {key} must be a mapping of name to definition")
@@ -171,7 +174,7 @@ def check_identity_vars(where, mv, problems, warns):
                 if extra:
                     problems.append(f"{where}: {key} {who!r} has unknown keys "
                                     f"{sorted(extra)}; expected {sorted(allowed)}")
-                if member_key in spec:
+                if member_key and member_key in spec:
                     _str_list(f"{where}: {key} {who!r}", member_key, spec[member_key], problems)
             elif key == "identity_groups" and not isinstance(spec, list):
                 problems.append(f"{where}: identity_groups {who!r} must be a member "
@@ -240,27 +243,12 @@ def check_identity_vars(where, mv, problems, warns):
         members = spec.get("members", []) if isinstance(spec, dict) else spec
         refs += [(f"identity_groups {who!r} member", m) for m in members
                  if isinstance(m, str)]
-    for who, spec in (mv.get("identity_users") or {}).items():
-        if isinstance(spec, dict):
-            refs += [(f"identity_users {who!r} groups", g) for g in spec.get("groups", [])
-                     if isinstance(g, str)]
     for label, ref in refs:
         if ref.lower() in defined or re.match(r"^LabUser\d+$", ref):
             continue
         warns.append(f"{where}: {label} {ref!r} matches no user or group defined here; "
                      f"members are resolved by sAMAccountName (the map key), not display "
                      f"name")
-
-    # user.groups and group.members both add membership; steer to one source.
-    here_groups = {g.lower() for g in (mv.get("identity_groups") or {})}
-    for who, spec in (mv.get("identity_users") or {}).items():
-        if not isinstance(spec, dict):
-            continue
-        for g in spec.get("groups", []):
-            if isinstance(g, str) and g.lower() in here_groups:
-                warns.append(f"{where}: identity_users {who!r} joins {g!r} via 'groups', "
-                             f"but {g!r} is defined here too; list {who!r} in that "
-                             f"group's members instead, to keep one source of truth")
 
 
 def declared_principals(hosts):
@@ -334,6 +322,35 @@ def check_vpn_vars(where, mv, problems):
             seen.add(c.lower())
 
 
+def check_acl_vars(where, mv, declared, problems, warns):
+    grants = mv.get("acl_grants")
+    if grants is None:
+        return
+    if not isinstance(grants, list):
+        problems.append(f"{where}: acl_grants must be a list")
+        return
+    for g in grants:
+        if not isinstance(g, dict):
+            problems.append(f"{where}: acl_grants entry {g!r} must be a mapping")
+            continue
+        for key in ("principal", "target", "right"):
+            if not isinstance(g.get(key), str) or not g[key].strip():
+                problems.append(f"{where}: acl_grants entry {g!r} needs a non-empty {key!r}")
+        if isinstance(g.get("right"), str) and g["right"] not in VALID_ACL_RIGHTS:
+            problems.append(f"{where}: acl_grants right {g['right']!r} must be one of "
+                            f"{sorted(VALID_ACL_RIGHTS)}")
+        access = g.get("access", "Allow")
+        if access not in VALID_ACL_ACCESS:
+            problems.append(f"{where}: acl_grants access {access!r} must be Allow or Deny")
+        for key in ("principal", "target"):
+            ref = g.get(key)
+            if isinstance(ref, str) and ref.strip():
+                bare = ref.rstrip("$")
+                if bare.lower() not in declared and not re.match(r"^LabUser\d+$", bare):
+                    warns.append(f"{where}: acl_grants {key} {ref!r} matches no principal "
+                                 f"this lab creates; it must already exist")
+
+
 def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
     where = f"{host.get('name')}: module {mod!r}"
     if mod == "identity":
@@ -342,6 +359,8 @@ def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
         check_logon_vars(host, where, mv, lab_modules, declared, problems, warns)
     elif mod == "vpn":
         check_vpn_vars(where, mv, problems)
+    elif mod == "acl":
+        check_acl_vars(where, mv, declared, problems, warns)
 
 
 def module_vars(host):

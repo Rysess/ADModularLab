@@ -40,6 +40,7 @@ Groups reference members by that key, `[bob]`, never by display name.
         identity_groups:
           Server-Admins: [alice]
           Helpdesk: [bob, Server-Admins]     # a member is a user or a group
+          Domain Admins: [alice]             # built-ins work too, not recreated
           Tier0-Admins:
             ou: Tier0/Admins
             scope: universal
@@ -50,7 +51,6 @@ Groups reference members by that key, `[bob]`, never by display name.
           alice:
             display: Alice Martin
             ou: Tier0/Admins
-            groups: [Domain Admins]
           svc_sql:
             display: SQL Service
             password: Summer2025!
@@ -60,18 +60,17 @@ A group's value is its member list, or a mapping of `members`, `description`,
 `scope` (`global`, `domainlocal`, `universal`), `category` (`security`,
 `distribution`) and `ou`. A user's value is its display name, or a mapping of
 `display`, `description`, `firstname`, `surname`, `email`, `password`,
-`enabled`, `ou` and `groups`. `firstname` and `surname` are set only when given,
-not inferred from the display name; `password` defaults to the lab user
-password.
+`enabled` and `ou`. `firstname` and `surname` are set only when given, not
+inferred from the display name; `password` defaults to the lab user password.
 
 A member is resolved by sAMAccountName, so it is a user or group key here, a
 LabUser, or a built-in like `Domain Admins`. Naming a display name (`Bob Reyes`)
 instead of the key (`bob`) fails at runtime; preflight warns first.
 
-Membership has one canonical place: a group's `members` list. A user's `groups`
-is for groups defined elsewhere — built-ins like `Domain Admins` you would not
-redeclare here. Using `groups` to join a group this module also defines is
-redundant and preflight warns; put the user in that group's `members` instead.
+Membership is set only through `identity_groups`, a group's `members` list — a
+user has no `groups`. A built-in (`Domain Admins`, `Remote Desktop Users`) may
+be a group key: it is populated, never recreated or rescoped, so its members are
+added without touching the existing group.
 
 Two users may not share a display name in the same container: the object is
 identified by its sAMAccountName (the key), but its CN is the display name, and

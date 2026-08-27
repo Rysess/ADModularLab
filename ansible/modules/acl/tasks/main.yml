@@ -1,0 +1,75 @@
+---
+- name: Ensure the ActiveDirectory PowerShell module is present
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+
+- name: Grant AD rights between principals
+  ansible.windows.win_powershell:
+    error_action: stop
+    parameters:
+      Grants: "{{ acl_grants }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyCollection()][object[]]$Grants)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      $nullGuid = [guid]'00000000-0000-0000-0000-000000000000'
+
+      function Resolve-ADObj([string]$name, [string[]]$props) {
+          $obj = Get-ADObject -LDAPFilter "(sAMAccountName=$name)" -Properties $props
+          if (-not $obj) {
+              $obj = Get-ADObject -LDAPFilter "(sAMAccountName=$name`$)" -Properties $props
+          }
+          return $obj
+      }
+
+      foreach ($g in $Grants) {
+          $principal = [string]$g.principal
+          $target = [string]$g.target
+          $rightName = [string]$g.right
+          $access = if ($g.PSObject.Properties['access'] -and $g.access) { [string]$g.access } else { 'Allow' }
+
+          try {
+              $pObj = Resolve-ADObj $principal @('objectSid')
+              if (-not $pObj) { throw "principal '$principal' not found" }
+              $sid = New-Object System.Security.Principal.SecurityIdentifier($pObj.objectSid)
+
+              $tObj = Resolve-ADObj $target @('objectSid')
+              if (-not $tObj) { throw "target '$target' not found" }
+
+              $adRights = [System.DirectoryServices.ActiveDirectoryRights]$rightName
+              $type = [System.Security.AccessControl.AccessControlType]$access
+              $path = "AD:\$($tObj.DistinguishedName)"
+              $acl = Get-Acl -Path $path
+
+              $ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule(
+                  $sid, $adRights, $type, $nullGuid,
+                  [System.DirectoryServices.ActiveDirectorySecurityInheritance]::None, $nullGuid)
+
+              # AddAccessRule merges an identical ACE, so the SDDL only changes
+              # when the grant is genuinely new: idempotency without guesswork.
+              $before = $acl.Sddl
+              $acl.AddAccessRule($ace)
+              if ($acl.Sddl -eq $before) { continue }
+
+              Set-Acl -Path $path -AclObject $acl
+              $Ansible.Changed = $true
+              Write-Output "$principal -$rightName($access)-> $target"
+          } catch {
+              $Ansible.Failed = $true
+              Write-Output "failed: $principal -$rightName-> ${target}: $($_.Exception.Message)"
+              return
+          }
+      }
+  register: acl_result
+  until: acl_result is succeeded
+  retries: "{{ acl_ad_retries }}"
+  delay: "{{ acl_ad_delay }}"
+
+- name: Report the grants applied
+  ansible.builtin.debug:
+    var: acl_result.output
+  when: acl_result.output | default([]) | length > 0

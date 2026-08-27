@@ -11,9 +11,8 @@ identity_update_password: on_create
 
 # The key is the sAMAccountName (login); the value is the display name, or a
 # mapping of display, description, firstname, surname, email, password, enabled,
-# ou, groups. password defaults to the lab user password. Prefer a group's
-# members list over a user's groups; keep groups for built-ins like Domain
-# Admins. Members reference the key, never the display name.
+# ou. password defaults to the lab user password. Group membership is set only
+# through identity_groups below, including built-ins (Domain Admins: [alice]).
 identity_users: {}
 
 # name: member list, or a mapping of members, description, scope, category, ou.

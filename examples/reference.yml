@@ -80,7 +80,6 @@ hosts:
             alice:
               display: Alice Martin
               ou: Tier0/Admins
-              groups: [Domain Admins]
             svc_sql:
               display: SQL Service
               password: Summer2025!
@@ -93,6 +92,12 @@ hosts:
           vulns_rbcd: false
           vulns_dcsync: true
           vulns_dcsync_principals: [LabUser5]
+      # Grant AD rights between principals (the ACEs BloodHound reports).
+      - name: acl
+        vars:
+          acl_grants:
+            - { principal: Helpdesk, target: Tier0-Admins, right: GenericAll }
+            - { principal: Server-Admins, target: alice, right: GenericWrite }
       - name: trust
         vars:
           trust_partners:

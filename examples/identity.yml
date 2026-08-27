@@ -45,11 +45,12 @@ hosts:
               scope: universal        # global (default), domainlocal, universal
               description: Forest administrators
               members: [alice]
+            # Built-ins work as keys too and are populated, not recreated.
+            Domain Admins: [alice]
           identity_users:
             alice:
               display: Alice Martin
               ou: Tier0/Admins
-              groups: [Domain Admins]  # for built-ins, use the user's 'groups'
             bob: Bob Reyes             # short form: just a display name
             svc_app:
               display: App Service

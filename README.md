@@ -32,7 +32,8 @@ Destroy with `./clean.sh`, pause with `./stop.sh` / `./start.sh`, snapshot with
 
 Ready-made definitions live in [`examples/`](examples/README.md); run one with
 `LAB_FILE=examples/minimal.yml ./run.sh`. The default `lab.yml` costs about
-**$0.20/hour** in `eu-west-3`.
+**$0.20/hour** in `eu-west-3` and terminates itself after `expires_hours` (168h);
+each `./run.sh` resets that timer.
 
 ## Configuration
 
@@ -103,27 +104,31 @@ One per host, from the `role` field.
 
 ## Modules
 
-Any number per host, from the `modules` list.
+Any number per host, from the `modules` list. **Runs on** is the host role a
+module may be assigned to; `run.sh` rejects any other placement.
 
-| Module | OS | Description |
-| ------ | -- | ----------- |
-| [`identity`](ansible/modules/identity/README.md) | windows | Domain users, groups and OUs. |
-| [`logon`](ansible/modules/logon/README.md) | windows | Who may log on to a host, and how. |
-| [`gmsa`](ansible/modules/gmsa/README.md) | windows | KDS root keys and gMSA accounts. |
-| [`shares`](ansible/modules/shares/README.md) | windows | SMB shares of synthetic data with per-group ACLs. |
-| [`sql_server`](ansible/modules/sql_server/README.md) | windows | SQL Server Express with a demo database. |
-| [`adcs`](ansible/modules/adcs/README.md) | windows | Enterprise Root CA with toggleable ESC1/ESC4/ESC8/ESC11. |
-| [`laps`](ansible/modules/laps/README.md) | windows | Windows LAPS, with optional over-permissive read delegation. |
-| [`trust`](ansible/modules/trust/README.md) | windows | Forest and external trusts with their DNS forwarders. |
-| [`vulns`](ansible/modules/vulns/README.md) | windows | Toggleable AD misconfigurations; all off by default. |
-| [`defender`](ansible/modules/defender/README.md) | windows | Microsoft Defender on or off, with excluded directories. |
-| [`edr_server`](ansible/modules/edr_server/README.md) | linux | Elastic Stack, Fleet and Windows detection rules. |
-| [`edr_agent`](ansible/modules/edr_agent/README.md) | windows | Enrols the Elastic Agent. |
-| [`vpn`](ansible/modules/vpn/README.md) | linux | OpenVPN access box, split-tunnel into the lab. |
+| Module | OS | Runs on | Description |
+| ------ | -- | ------- | ----------- |
+| [`identity`](ansible/modules/identity/README.md) | windows | dc / child_dc | Domain users, groups and OUs. |
+| [`logon`](ansible/modules/logon/README.md) | windows | any | Who may log on to a host, and how. |
+| [`gmsa`](ansible/modules/gmsa/README.md) | windows | dc | KDS root keys and gMSA accounts. |
+| [`shares`](ansible/modules/shares/README.md) | windows | any | SMB shares of synthetic data with per-group ACLs. |
+| [`sql_server`](ansible/modules/sql_server/README.md) | windows | any | SQL Server Express with a demo database. |
+| [`adcs`](ansible/modules/adcs/README.md) | windows | any | Enterprise Root CA with toggleable ESC1/ESC4/ESC8/ESC11. |
+| [`laps`](ansible/modules/laps/README.md) | windows | member | Windows LAPS, with optional over-permissive read delegation. |
+| [`trust`](ansible/modules/trust/README.md) | windows | dc | Forest and external trusts with their DNS forwarders. |
+| [`vulns`](ansible/modules/vulns/README.md) | windows | dc | Toggleable AD misconfigurations; all off by default. |
+| [`acl`](ansible/modules/acl/README.md) | windows | dc | Grants AD rights (GenericAll, GenericWrite, …) between principals. |
+| [`defender`](ansible/modules/defender/README.md) | windows | any | Microsoft Defender on or off, with excluded directories. |
+| [`edr_server`](ansible/modules/edr_server/README.md) | linux | any | Elastic Stack, Fleet and Windows detection rules. |
+| [`edr_agent`](ansible/modules/edr_agent/README.md) | windows | any | Enrols the Elastic Agent. |
+| [`vpn`](ansible/modules/vpn/README.md) | linux | any | OpenVPN access box, split-tunnel into the lab. |
 
-A role or module declares its requirements in `lab_meta.yml`, which `run.sh`
-checks (`os`, `min_instance_type`, `requires_role`, `requires_lab_role`,
-`requires_lab`).
+`dc`-only modules act on the directory itself, so they run on the controller.
+Some `any` modules still need a `dc` (and `identity`) somewhere in the lab —
+`shares` and `adcs`, for instance. Each module declares this in `lab_meta.yml`
+via `os`, `min_instance_type`, `requires_role`, `requires_lab_role` and
+`requires_lab`, which `run.sh` checks before deploying.
 
 ## Users and groups
 
@@ -142,10 +147,10 @@ chart.
       vars:
         identity_groups:
           Server-Admins: [alice]
+          Domain Admins: [alice]      # built-ins work too; not recreated
         identity_users:
           alice:
             display: Alice Martin
-            groups: [Domain Admins]
 
 - name: srv-win01
   role: member
@@ -176,18 +181,3 @@ ansible-playbook site.yml --tags modules --limit mod_shares
 Add a module by creating `ansible/modules/<name>/tasks/main.yml` (optionally
 `defaults/main.yml`, `lab_meta.yml`, `README.md`) and listing `<name>` on a
 host. No change to Terraform or `site.yml` is needed.
-
-## AWS content
-
-Per lab: one VPC, one public subnet, one EC2 instance per host (encrypted gp3,
-IMDSv2), and an expiry Lambda that once `expires_hours` passes **terminates** the
-lab — or stops it with `expires_action: stop`, or nothing with
-`expires_enabled: false`. Each `./run.sh` resets that clock to `expires_hours`
-from now, so a lab you are actively re-running stays alive; `stop.sh`/`start.sh`
-do not. Hosts are reached over the VPN by internal IP.
-
-Credentials go to `lab_credentials.txt` (0600); only the ones a lab actually uses
-are listed. No credential is placed in EC2 user-data.
-
-Ansible prints `Found variable using reserved name: tags` on every run — harmless,
-from the EC2 inventory exposing instance tags, and not suppressible.

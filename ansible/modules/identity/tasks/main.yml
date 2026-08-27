@@ -88,8 +88,27 @@
   retries: "{{ identity_ad_retries }}"
   delay: "{{ identity_ad_delay }}"
 
-# Groups before users so a user can be created straight into one, membership
-# after both so a group can name either.
+# Which declared groups already exist (built-ins like Domain Admins, or groups
+# another module made). Those are only populated, never recreated or rescoped.
+- name: Find which declared groups already exist
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Names: "{{ identity_group_list | map(attribute='name') | list }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyCollection()][string[]]$Names)
+      Set-StrictMode -Version Latest
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      foreach ($n in $Names) {
+          if (Get-ADGroup -LDAPFilter "(sAMAccountName=$n)") { $n }
+      }
+  register: identity_existing_groups
+  changed_when: false
+
+# Groups before users so membership (added last) can name either. Only groups
+# that do not yet exist are created, so a declared built-in keeps its scope.
 - name: Create groups
   microsoft.ad.group:
     name: "{{ item.name }}"
@@ -102,6 +121,7 @@
   loop: "{{ identity_group_list }}"
   loop_control:
     label: "{{ item.name }}"
+  when: item.name not in (identity_existing_groups.output | default([]))
   register: identity_group_result
   until: identity_group_result is succeeded
   retries: "{{ identity_ad_retries }}"
@@ -124,8 +144,6 @@
     update_password: "{{ identity_update_password }}"
     password_never_expires: true
     enabled: "{{ item.enabled | default(true) }}"
-    groups:
-      add: "{{ item.groups | default([]) }}"
     path: "{{ item.path if item.path | default('') else omit }}"
     state: present
   loop: "{{ identity_user_list }}"
