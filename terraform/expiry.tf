@@ -1,9 +1,10 @@
-# Stops the lab when its ExpiresAt tag passes. Runs in AWS rather than from a
-# local cron, which would not fire with the operator's machine off.
+# Terminates (default) or stops the lab when its ExpiresAt tag passes. Runs in
+# AWS rather than a local cron, which would not fire with the operator's machine
+# off. Set lab.expires_action: stop to keep the disks and just halt compute.
 
 locals {
   expires_enabled = try(local.lab.expires_enabled, true)
-  expires_action  = try(local.lab.expires_action, "stop")
+  expires_action  = try(local.lab.expires_action, "terminate")
   expiry_count    = local.expires_enabled ? 1 : 0
 }
 

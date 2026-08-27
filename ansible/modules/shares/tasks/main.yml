@@ -20,22 +20,6 @@
   retries: "{{ shares_ad_retries }}"
   delay: "{{ shares_ad_delay }}"
 
-- name: Populate AD group memberships (users + nested Auditors)
-  microsoft.ad.group:
-    name: "{{ item.group }}"
-    scope: global
-    members:
-      add: "{{ item.members }}"
-    state: present
-  loop: "{{ shares_ad_group_members }}"
-  loop_control:
-    label: "{{ item.group }}"
-  delegate_to: "{{ shares_dc_host }}"
-  register: shares_members
-  until: shares_members is succeeded
-  retries: "{{ shares_ad_retries }}"
-  delay: "{{ shares_ad_delay }}"
-
 - name: Create share root dirs
   ansible.windows.win_file:
     path: "{{ shares_root }}\\{{ item.name }}"

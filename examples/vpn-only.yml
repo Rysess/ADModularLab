@@ -25,4 +25,8 @@ hosts:
     expose_ports:
       - { port: 1194, proto: udp }
     modules:
-      - vpn
+      # One profile per name -> ansible/alice.ovpn, ansible/bob.ovpn. Omit
+      # vpn_clients for a single ansible/client1.ovpn.
+      - name: vpn
+        vars:
+          vpn_clients: [alice, bob]

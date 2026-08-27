@@ -1,0 +1,56 @@
+---
+# The AD attack surface: each misconfiguration the vulns module can toggle, with
+# a member server as the delegation target. About $0.11/hour.
+#
+#   LAB_FILE=examples/vulns.yml ./run.sh
+#
+# Everything here is off by default in the module; this file turns each on so
+# you can practise the matching attack. Do not expose it beyond your own IP.
+
+lab:
+  name: vulns-lab
+  region: eu-west-3
+  domain_admin: john.john
+  domain_admin_display: John John
+  expires_hours: 24
+
+defaults:
+  windows_instance_type: t3.medium
+  windows_disk_gb: 50
+  windows_version: "2022"
+
+hosts:
+  - name: dc01
+    os: windows
+    role: dc
+    domain: lab.local
+    instance_type: t3.medium
+    private_ip: 10.0.1.10
+    modules:
+      - name: vulns
+        vars:
+          # SPN on a service account with a weak password -> kerberoast.
+          vulns_kerberoast: true
+          # Accounts with pre-auth disabled -> AS-REP roast. Defaults to two
+          # LabUsers the dc role creates.
+          vulns_asreproast: true
+          # Grant a non-admin the replication rights DCSync needs.
+          vulns_dcsync: true
+          vulns_dcsync_principals: [LabUser5]
+          # Trust a computer for unconstrained delegation.
+          vulns_unconstrained_delegation: true
+          vulns_unconstrained_delegation_computers: [srv-win01]
+          # Let a principal configure RBCD onto a target computer.
+          vulns_rbcd: true
+          vulns_rbcd_grants:
+            - computer: srv-win01
+              allowed: [LabUser1]
+
+  - name: srv-win01
+    os: windows
+    role: member
+    domain: lab.local
+    instance_type: t3.small
+    private_ip: 10.0.1.40
+    # Target computer for the delegation scenarios above; no modules of its own.
+    modules: []

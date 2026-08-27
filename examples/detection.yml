@@ -31,6 +31,7 @@ hosts:
     instance_type: t3.large
     private_ip: 10.0.1.10
     modules:
+      - identity
       - name: gmsa
         vars:
           gmsa_count: 6

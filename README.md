@@ -5,18 +5,13 @@ and the modules each one runs. Terraform builds the infrastructure, Ansible
 discovers it through the EC2 dynamic inventory and applies the modules. Access is
 provided through an OpenVPN profile generated at deployment.
 
-> The lab exposes WinRM (5985), RDP and SSH to the deploying machine's public IP,
-> and runs deliberately weak Active Directory configurations. Do not connect it to
-> anything you care about.
+> The lab exposes WinRM, RDP and SSH to the deploying machine's public IP, and
+> runs deliberately weak AD configurations. Do not connect it to anything you
+> care about.
 
 ## Install
 
-| Tool | Version |
-| ---- | ------- |
-| Terraform | >= 1.6 |
-| Python | >= 3.9 |
-| AWS CLI | v2 |
-| `jq` | any |
+Needs Terraform >= 1.6, Python >= 3.9, AWS CLI v2 and `jq`.
 
 ```
 python3 -m venv venv
@@ -32,27 +27,21 @@ ansible-galaxy collection install -r ansible/requirements.yml
 2. Run `./run.sh`
 3. Import `ansible/client1.ovpn` into OpenVPN
 
-Destroy the lab with `./clean.sh`, or pause it with `./stop.sh` / `./start.sh`.
+Destroy with `./clean.sh`, pause with `./stop.sh` / `./start.sh`, snapshot with
+`./snapshot.sh`, and list open sessions with `./sessions.sh`.
 
-Ready-made definitions live in [`examples/`](examples/README.md), from a single
-DC to two forests with a child domain:
-
-```
-LAB_FILE=examples/minimal.yml ./run.sh
-```
-
-The default `lab.yml` costs about **$0.20/hour** in `eu-west-3`. Each lab also
-deploys a Lambda that stops it once `lab.expires_hours` has passed, so a
-forgotten lab stops charging for compute on its own.
+Ready-made definitions live in [`examples/`](examples/README.md); run one with
+`LAB_FILE=examples/minimal.yml ./run.sh`. The default `lab.yml` costs about
+**$0.20/hour** in `eu-west-3`.
 
 ## Configuration
 
-Each host is declared with an `os`, a `role`, the `domain` it belongs to, and a
-list of `modules`.
+Each host has an `os`, a `role`, the `domain` it belongs to, and a list of
+`modules`.
 
 ```yaml
 lab:
-  name: adshares-lab
+  name: ad-lab
   region: eu-west-3
   domain_admin: john.john
 
@@ -73,26 +62,23 @@ hosts:
       - shares
 ```
 
-Every `dc`, `child_dc` and `member` names the domain it serves or joins. There
-is no default: one domain or five, each host says which it is in. A `child_dc`
-is a child of its domain minus the first label, so `child.lab.local` is a child
-of `lab.local`. Adding a second forest is another `dc` with another `domain`.
+`lab` takes `name`, `region` and `domain_admin` (required), plus optional
+`domain_admin_display`, `expires_hours`, `expires_action`, `expires_enabled`.
+`defaults` sets fleet-wide `windows_instance_type`, `linux_instance_type`,
+`windows_disk_gb`, `linux_disk_gb`, `windows_version`, `windows_edition` and
+`ubuntu_release`. A host may override any of these and also take `instance_type`,
+`disk_gb`, `private_ip`, `ami`, `source_dest_check`, `expose_ports` and `vars`.
+See [`examples/reference.yml`](examples/reference.yml) for every field annotated.
 
-Host names are NetBIOS names: 15 characters maximum, alphanumeric and `-`.
+Every `dc`, `child_dc` and `member` names the domain it serves or joins. A
+`child_dc` is a child of its domain minus the first label, so `child.lab.local`
+sits under `lab.local`; a second forest is another `dc` with another `domain`.
 
-Optional per-host fields: `instance_type`, `disk_gb`, `private_ip`, `ami`,
-`windows_version`, `source_dest_check`, `expose_ports`, `vars`.
+`windows_version` is `2016`/`2019`/`2022`/`2025`. `windows_edition` is `full`
+(Desktop Experience) or `core` (no desktop shell, smaller instances).
 
-Optional `lab` fields: `domain_admin_display`, `expires_hours`, `expires_action`
-(`stop` or `terminate`), `expires_enabled`, `imdsv1_enabled`.
-
-Optional `defaults` fields: `windows_instance_type`, `linux_instance_type`,
-`windows_disk_gb`, `linux_disk_gb`, `windows_version` (`2016`/`2019`/`2022`/`2025`),
-`ubuntu_release`.
-
-A `modules` entry is either a bare name or a mapping carrying variables for that
-module on that host. A `vars` block does the same for the host itself. Both are
-written to `ansible/host_vars/<host>.yml`.
+A `modules` entry is a bare name, or a mapping with a `vars` block for that
+module on that host:
 
 ```yaml
 modules:
@@ -102,90 +88,106 @@ modules:
       gmsa_count: 6
 ```
 
-`run.sh` validates the lab file before Terraform runs and reports what is wrong
-rather than failing twenty minutes into a deployment; bypass with
-`./run.sh --force`.
+`run.sh` validates `lab.yml` before Terraform runs; bypass with `./run.sh --force`.
 
 ## Roles
 
-Applied from the `role` field, one per host.
+One per host, from the `role` field.
 
-| Role | OS | Description |
-| ---- | -- | ----------- |
-| [`dc`](ansible/roles/dc/README.md) | windows | Promotes the domain controller, creates users and a domain admin. |
-| [`child_dc`](ansible/roles/domain_child/README.md) | windows | Promotes a child domain beneath a forest root. |
-| [`member`](ansible/roles/domain_member/README.md) | windows | Joins the host to the domain. |
-| `standalone` | any | No structural role, modules only. |
+| Role | Description |
+| ---- | ----------- |
+| [`dc`](ansible/roles/dc/README.md) | Promotes the domain controller, creates users and a domain admin. |
+| [`child_dc`](ansible/roles/domain_child/README.md) | Promotes a child domain beneath a forest root. |
+| [`member`](ansible/roles/domain_member/README.md) | Joins the host to the domain. |
+| `standalone` | No structural role, modules only. |
 
 ## Modules
 
-Applied from the `modules` list, any number per host.
+Any number per host, from the `modules` list.
 
 | Module | OS | Description |
 | ------ | -- | ----------- |
+| [`identity`](ansible/modules/identity/README.md) | windows | Domain users, groups and OUs. |
+| [`logon`](ansible/modules/logon/README.md) | windows | Who may log on to a host, and how. |
 | [`gmsa`](ansible/modules/gmsa/README.md) | windows | KDS root keys and gMSA accounts. |
-| [`shares`](ansible/modules/shares/README.md) | windows | SMB shares of synthetic data with per-group ACLs and AD groups. |
+| [`shares`](ansible/modules/shares/README.md) | windows | SMB shares of synthetic data with per-group ACLs. |
 | [`sql_server`](ansible/modules/sql_server/README.md) | windows | SQL Server Express with a demo database. |
 | [`adcs`](ansible/modules/adcs/README.md) | windows | Enterprise Root CA with toggleable ESC1/ESC4/ESC8/ESC11. |
 | [`laps`](ansible/modules/laps/README.md) | windows | Windows LAPS, with optional over-permissive read delegation. |
-| [`trust`](ansible/modules/trust/README.md) | windows | Forest and external trusts, with their DNS conditional forwarders. |
+| [`trust`](ansible/modules/trust/README.md) | windows | Forest and external trusts with their DNS forwarders. |
 | [`vulns`](ansible/modules/vulns/README.md) | windows | Toggleable AD misconfigurations; all off by default. |
 | [`defender`](ansible/modules/defender/README.md) | windows | Microsoft Defender on or off, with excluded directories. |
 | [`edr_server`](ansible/modules/edr_server/README.md) | linux | Elastic Stack, Fleet and Windows detection rules. |
 | [`edr_agent`](ansible/modules/edr_agent/README.md) | windows | Enrols the Elastic Agent. |
 | [`vpn`](ansible/modules/vpn/README.md) | linux | OpenVPN access box, split-tunnel into the lab. |
 
-A role or module may declare requirements in `lab_meta.yml`, which `run.sh`
-checks: `os`, `min_instance_type`, `requires_role`, `requires_lab_role` and
-`requires_lab`.
+A role or module declares its requirements in `lab_meta.yml`, which `run.sh`
+checks (`os`, `min_instance_type`, `requires_role`, `requires_lab_role`,
+`requires_lab`).
+
+## Users and groups
+
+The `dc` role creates `LabUser1`-`LabUser10` and the domain admin.
+[`identity`](ansible/modules/identity/README.md) adds named users, groups and
+OUs (each keyed by name), and [`logon`](ansible/modules/logon/README.md) decides
+who may log on to a host. Omit `identity`'s vars for a default ten-group org
+chart.
+
+```yaml
+- name: dc01
+  role: dc
+  domain: lab.local
+  modules:
+    - name: identity
+      vars:
+        identity_groups:
+          Server-Admins: [alice]
+        identity_users:
+          alice:
+            display: Alice Martin
+            groups: [Domain Admins]
+
+- name: srv-win01
+  role: member
+  domain: lab.local
+  modules:
+    - name: logon
+      vars:
+        logon_admins: [Server-Admins]
+        logon_deny_network: [Domain Admins]
+```
 
 ## Layout
 
 - `ansible/roles/` structural roles applied by `role`
 - `ansible/modules/` capabilities applied per host via the `modules` list
-- `ansible/group_vars/` connection settings; Terraform writes secrets and lab
-  addressing here, gitignored
-- `ansible/host_vars/` per-host variables, generated by Terraform
 - `ansible/inventory.aws_ec2.yml` dynamic inventory, keyed on instance tags
 - `terraform/` network, security, keys, compute, secrets, expiry
 - `examples/` ready-made lab definitions
 
-Hosts are grouped by tag: `windows` / `linux`, `role_<role>`, `mod_<module>`.
-Because the inventory is dynamic, `ansible-playbook site.yml` can be re-run against
-a live lab without Terraform, and `--limit` / `--tags` work as expected:
+Because the inventory is dynamic, `ansible-playbook site.yml` re-runs against a
+live lab, with `--limit mod_<module>` / `--tags modules` to scope it:
 
 ```
-cd ansible
-export LAB_NAME=adshares-lab AWS_REGION=eu-west-3
+cd ansible && export LAB_NAME=ad-lab AWS_REGION=eu-west-3
 ansible-playbook site.yml --tags modules --limit mod_shares
 ```
 
-Tags are `always`, `prepare`, `dc`, `child_dc`, `member`, `base` and `modules`.
-
-## Adding a module
-
-1. Create `ansible/modules/<name>/tasks/main.yml`
-2. Optionally add `defaults/main.yml`, `lab_meta.yml` and `README.md`
-3. Add `<name>` to a host `modules` list
-
-No change to Terraform or `site.yml` is required.
-
-## Snapshots
-
-`./snapshot.sh` creates an AMI per instance. Set `ami: <id>` on a host to rebuild
-from one, which skips the ~40 minute promotion and join cycle. A snapshot is not
-sysprepped, so EC2 publishes no password data for it: those hosts keep the local
-Administrator password from the snapshot.
+Add a module by creating `ansible/modules/<name>/tasks/main.yml` (optionally
+`defaults/main.yml`, `lab_meta.yml`, `README.md`) and listing `<name>` on a
+host. No change to Terraform or `site.yml` is needed.
 
 ## AWS content
 
-Per lab: one VPC, one public subnet, one EC2 instance per host with encrypted gp3
-root volumes and IMDSv2 required, and the expiry Lambda with its schedule and
-role. Hosts are reached over the VPN using their internal IPs; VPN clients keep
-their own `10.8.0.0/24` source addresses so authentication events attribute
-correctly.
+Per lab: one VPC, one public subnet, one EC2 instance per host (encrypted gp3,
+IMDSv2), and an expiry Lambda that once `expires_hours` passes **terminates** the
+lab — or stops it with `expires_action: stop`, or nothing with
+`expires_enabled: false`. Each `./run.sh` resets that clock to `expires_hours`
+from now, so a lab you are actively re-running stays alive; `stop.sh`/`start.sh`
+do not. Hosts are reached over the VPN by internal IP.
 
-Passwords are separated by purpose and written to `lab_credentials.txt` (0600):
-local Administrator per Windows host, domain admin, DSRM, lab users, SQL,
-Elastic, the Elastic monitor user, the child-domain promotion account and the
-trust secret. No credential is placed in EC2 user-data.
+Credentials go to `lab_credentials.txt` (0600); only the ones a lab actually uses
+are listed. No credential is placed in EC2 user-data.
+
+Ansible prints `Found variable using reserved name: tags` on every run — harmless,
+from the EC2 inventory exposing instance tags, and not suppressible.

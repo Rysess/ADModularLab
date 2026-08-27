@@ -7,40 +7,13 @@ shares_netbios: "{{ domain_netbios }}"
 shares_ad_retries: 5
 shares_ad_delay: 10
 
+# Only the groups the shares below are ACL'd to. The org chart that fills them
+# is the identity module's.
 shares_ad_groups:
-  - IT-Admins
   - Finance-Team
+  - IT-Admins
   - Backup-Admins
   - DevOps
-  - Server-Admins
-  - Management
-  - HR
-  - Helpdesk
-  - Security-Team
-  - Auditors
-
-# Auditors is nested into the sensitive groups.
-shares_ad_group_members:
-  - group: Finance-Team
-    members: [LabUser1, Auditors]
-  - group: IT-Admins
-    members: [LabUser2, Auditors]
-  - group: Backup-Admins
-    members: [LabUser3, Auditors]
-  - group: DevOps
-    members: [LabUser4, Auditors]
-  - group: Server-Admins
-    members: [LabUser9, Auditors]
-  - group: Management
-    members: [LabUser5]
-  - group: HR
-    members: [LabUser6]
-  - group: Helpdesk
-    members: [LabUser7]
-  - group: Security-Team
-    members: [LabUser8]
-  - group: Auditors
-    members: [LabUser10]
 
 shares_definitions:
   - { name: Finance, grp: Finance-Team }

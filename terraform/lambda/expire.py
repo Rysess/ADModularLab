@@ -5,7 +5,7 @@ import os
 import boto3
 
 LAB = os.environ["LAB_NAME"]
-ACTION = os.environ.get("EXPIRE_ACTION", "stop")
+ACTION = os.environ.get("EXPIRE_ACTION", "terminate")
 
 
 def expired_instances(ec2, now):

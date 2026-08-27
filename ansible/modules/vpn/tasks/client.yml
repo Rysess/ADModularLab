@@ -1,0 +1,36 @@
+---
+# One OpenVPN client profile, looped over vpn_clients from main.yml. Re-run every
+# play so the profile follows the server's public IP across stop/start.
+- name: Read the PKI material for {{ vpn_client }}
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ vpn_easyrsa_dir }}/pki/ca.crt"
+    - "{{ vpn_easyrsa_dir }}/pki/issued/{{ vpn_client }}.crt"
+    - "{{ vpn_easyrsa_dir }}/pki/private/{{ vpn_client }}.key"
+    - "{{ vpn_server_dir }}/tls-crypt.key"
+  loop_control:
+    label: "{{ item | basename }}"
+  register: vpn_pki
+  no_log: true
+
+- name: Render the profile for {{ vpn_client }}
+  ansible.builtin.template:
+    src: client.ovpn.j2
+    dest: "/home/ubuntu/{{ vpn_client }}.ovpn"
+    owner: ubuntu
+    group: ubuntu
+    mode: "0600"
+  vars:
+    vpn_endpoint: "{{ ansible_host }}"
+    vpn_ca_cert: "{{ vpn_pki.results[0].content | b64decode }}"
+    vpn_client_cert: "{{ vpn_pki.results[1].content | b64decode }}"
+    vpn_client_key: "{{ vpn_pki.results[2].content | b64decode }}"
+    vpn_tls_crypt: "{{ vpn_pki.results[3].content | b64decode }}"
+  no_log: true
+
+- name: Fetch the profile to the operator for {{ vpn_client }}
+  ansible.builtin.fetch:
+    src: "/home/ubuntu/{{ vpn_client }}.ovpn"
+    dest: "{{ vpn_profile_dir }}/{{ vpn_client }}.ovpn"
+    flat: true

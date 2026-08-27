@@ -1,0 +1,154 @@
+---
+# Runs on the controller that serves the domain, so no delegation: identity_domain
+# is this host's own domain and a child_dc populates its child the same way.
+
+# Seeded so an empty identity_users or identity_groups still leaves a list, not
+# an undefined variable, for the tasks below.
+- name: Seed the normalised lists
+  ansible.builtin.set_fact:
+    identity_group_list: []
+    identity_user_list: []
+
+- name: Normalise the declared groups
+  ansible.builtin.set_fact:
+    identity_group_list: >-
+      {{ identity_group_list | default([])
+         + [spec | combine({'name': item.key, 'path': path,
+                            'members': spec.members | default([], true)})] }}
+  vars:
+    spec: >-
+      {{ item.value if item.value is mapping
+         else {'members': item.value | default([], true)} }}
+    ou: "{{ spec.ou | default('') }}"
+    path: >-
+      {{ (ou | split('/') | select() | reverse | map('regex_replace', '^', 'OU=')
+          | join(',') ~ ',' ~ identity_domain_dn) if ou else '' }}
+  loop: "{{ identity_groups | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Normalise the declared users
+  ansible.builtin.set_fact:
+    identity_user_list: "{{ identity_user_list | default([]) + [entry] }}"
+  vars:
+    spec: >-
+      {{ item.value if item.value is mapping
+         else {'display': item.value | default('', true)} }}
+    display: "{{ spec.display | default(item.key, true) }}"
+    ou: "{{ spec.ou | default('') }}"
+    path: >-
+      {{ (ou | split('/') | select() | reverse | map('regex_replace', '^', 'OU=')
+          | join(',') ~ ',' ~ identity_domain_dn) if ou else '' }}
+    entry: >-
+      {{ spec | combine({'name': item.key, 'display': display, 'path': path}) }}
+  loop: "{{ identity_users | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# Every level of every path, so 'ou: Tier0/Admins' needs no separate declaration.
+- name: Create organisational units
+  ansible.windows.win_powershell:
+    parameters:
+      Paths: "{{ identity_ou_paths }}"
+      DomainDn: "{{ identity_domain_dn }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyCollection()][string[]]$Paths, [Parameter(Mandatory)][string]$DomainDn)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      foreach ($path in $Paths) {
+          $parent = $DomainDn
+          foreach ($label in ($path -split '/' | Where-Object { $_ })) {
+              $dn = "OU=$label,$parent"
+              try {
+                  if (-not (Get-ADOrganizationalUnit -LDAPFilter "(distinguishedName=$dn)")) {
+                      New-ADOrganizationalUnit -Name $label -Path $parent `
+                          -ProtectedFromAccidentalDeletion:$false
+                      Write-Output "created $dn"
+                      $Ansible.Changed = $true
+                  }
+              } catch {
+                  $Ansible.Failed = $true
+                  Write-Output "failed to create ${dn}: $($_.Exception.Message)"
+                  return
+              }
+              $parent = $dn
+          }
+      }
+  vars:
+    identity_ou_paths: >-
+      {{ (identity_ous
+          + ((identity_group_list + identity_user_list)
+             | map(attribute='ou', default='') | list))
+         | reject('equalto', '') | unique | sort }}
+  register: identity_ous_created
+  until: identity_ous_created is succeeded
+  retries: "{{ identity_ad_retries }}"
+  delay: "{{ identity_ad_delay }}"
+
+# Groups before users so a user can be created straight into one, membership
+# after both so a group can name either.
+- name: Create groups
+  microsoft.ad.group:
+    name: "{{ item.name }}"
+    sam_account_name: "{{ item.name }}"
+    description: "{{ item.description | default(omit) }}"
+    scope: "{{ item.scope | default('global') }}"
+    category: "{{ item.category | default('security') }}"
+    path: "{{ item.path if item.path | default('') else omit }}"
+    state: present
+  loop: "{{ identity_group_list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: identity_group_result
+  until: identity_group_result is succeeded
+  retries: "{{ identity_ad_retries }}"
+  delay: "{{ identity_ad_delay }}"
+
+- name: Create users
+  microsoft.ad.user:
+    # Located by sAMAccountName (identity), so renaming the display name renames
+    # the object rather than orphaning it or colliding on the CN.
+    identity: "{{ item.name }}"
+    name: "{{ item.display }}"
+    sam_account_name: "{{ item.name }}"
+    upn: "{{ item.name }}@{{ identity_domain }}"
+    display_name: "{{ item.display }}"
+    description: "{{ item.description | default(omit) }}"
+    firstname: "{{ item.firstname | default(omit) }}"
+    surname: "{{ item.surname | default(omit) }}"
+    email: "{{ item.email | default(omit) }}"
+    password: "{{ item.password | default(lab_user_password) }}"
+    update_password: "{{ identity_update_password }}"
+    password_never_expires: true
+    enabled: "{{ item.enabled | default(true) }}"
+    groups:
+      add: "{{ item.groups | default([]) }}"
+    path: "{{ item.path if item.path | default('') else omit }}"
+    state: present
+  loop: "{{ identity_user_list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: identity_user_result
+  until: identity_user_result is succeeded
+  retries: "{{ identity_ad_retries }}"
+  delay: "{{ identity_ad_delay }}"
+
+- name: Populate group membership
+  microsoft.ad.group:
+    # No scope here: the group already exists, and passing one would try to
+    # re-cast a group whose real scope differs (a domain-local built-in).
+    name: "{{ item.name }}"
+    path: "{{ item.path if item.path | default('') else omit }}"
+    members:
+      add: "{{ item.members }}"
+    state: present
+  loop: "{{ identity_group_list | selectattr('members') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: identity_member_result
+  until: identity_member_result is succeeded
+  retries: "{{ identity_ad_retries }}"
+  delay: "{{ identity_ad_delay }}"

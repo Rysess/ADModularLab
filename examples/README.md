@@ -9,12 +9,22 @@ LAB_FILE=examples/minimal.yml ./run.sh
 The same variable applies to `./stop.sh`, `./start.sh`, `./snapshot.sh` and
 `./clean.sh`. Copy one to `lab.yml` to make it the default.
 
+Focused labs, each teaching one area:
+
+| File | Modules shown | Hosts | Cost |
+| ---- | ------------- | ----- | ---- |
+| [`minimal.yml`](minimal.yml) | none — a bare domain controller | 1 | $0.07/hr |
+| [`vpn-only.yml`](vpn-only.yml) | `vpn` (multiple client profiles) | 1 | $0.01/hr |
+| [`identity.yml`](identity.yml) | `identity`, `logon` — users, groups, OUs, logon rights | 2 | $0.11/hr |
+| [`services.yml`](services.yml) | `gmsa`, `shares`, `sql_server`, `defender` | 2 | $0.14/hr |
+| [`vulns.yml`](vulns.yml) | `vulns` — every AD misconfiguration toggle | 2 | $0.11/hr |
+| [`adcs.yml`](adcs.yml) | `adcs` — all four ESC scenarios | 2 | $0.14/hr |
+
+Larger labs that combine areas:
+
 | File | Contents | Hosts | Cost |
 | ---- | -------- | ----- | ---- |
-| [`minimal.yml`](minimal.yml) | One domain controller | 1 | $0.07/hr |
-| [`vpn-only.yml`](vpn-only.yml) | VPN box only, for checking access and credentials first | 1 | $0.01/hr |
-| [`adcs.yml`](adcs.yml) | DC and a CA on a member server, all four ESC scenarios | 2 | $0.14/hr |
-| [`trusts.yml`](trusts.yml) | Two forests, a child domain, a forest trust, members in two domains, LAPS | 5 | $0.31/hr |
+| [`trusts.yml`](trusts.yml) | Two forests, a child domain, a forest trust, members in two domains, `laps` | 5 | $0.31/hr |
 | [`detection.yml`](detection.yml) | DC, member, SQL, Elastic stack, agents, weak AD, VPN | 4 | $0.31/hr |
 | [`reference.yml`](reference.yml) | Every configuration key, annotated | 8 | $0.52/hr |
 
@@ -25,7 +35,10 @@ whole schema; do not run it because it is the biggest.
 
 - Checking AWS credentials and the VPN path: `vpn-only.yml`.
 - Learning the tooling against a domain: `minimal.yml`.
-- Certificate services work: `adcs.yml`.
+- Users, groups and logon tiering: `identity.yml`.
+- File shares, SQL and gMSA: `services.yml`.
+- Practising AD attacks: `vulns.yml`.
+- Certificate services: `adcs.yml`.
 - Cross-domain and cross-forest work: `trusts.yml`.
 - Detection engineering: `detection.yml`, the only one with telemetry.
 
@@ -33,8 +46,9 @@ whole schema; do not run it because it is the biggest.
 
 `eu-west-3` on-demand, compute plus gp3, at the time of writing. `./stop.sh`
 halts compute and keeps EBS, leaving roughly $0.0001/GB/hr. Every resource is
-tagged `ExpiresAt` from `lab.expires_hours` so a reaper can clean up forgotten
-labs.
+tagged `ExpiresAt` from `lab.expires_hours`; once it passes, a Lambda terminates
+the lab (or stops it, with `expires_action: stop`) so a forgotten lab cleans up
+on its own.
 
 ## Domains
 
