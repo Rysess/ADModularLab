@@ -233,8 +233,7 @@ def check_identity_vars(where, mv, problems, warns):
                             f"one a different display or 'ou'")
         seen_cn[cn] = who
 
-    # A member is resolved by sAMAccountName, so it must be a user or group key
-    # here (or a LabUser / built-in), never a display name.
+    # A member is resolved by sAMAccountName (a key/LabUser/built-in), not a display name.
     defined = ({u.lower() for u in (mv.get("identity_users") or {})}
                | {g.lower() for g in (mv.get("identity_groups") or {})}
                | WELL_KNOWN)
@@ -527,8 +526,7 @@ def check_requirements(host, role, roles, itype, lab_roles, lab_modules, problem
             if dep not in lab_modules:
                 problems.append(f"{name}: '{r}' needs module '{dep}' somewhere in the lab")
 
-        # Core has no desktop shell and needs less memory, so a role may
-        # declare a lower floor for it.
+        # Core needs less memory, so a role may declare a lower floor for it.
         mint = m.get("min_instance_type")
         if edition == "core":
             mint = m.get("min_instance_type_core", mint)

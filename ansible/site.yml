@@ -9,8 +9,7 @@
       ansible.builtin.wait_for_connection:
         timeout: 900
 
-# Members are renamed during the join; everything else up front, because a DC
-# cannot be renamed once promoted.
+# Members are renamed on join; DCs up front (a promoted DC cannot be renamed).
 - name: Set Windows computer names
   hosts: windows:!role_member
   gather_facts: false
@@ -50,8 +49,7 @@
   roles:
     - domain_member
 
-# identity creates principals that other hosts' modules reference, so it runs
-# in its own play: a play boundary is a barrier, the module loop below is not.
+# identity runs in its own play (a barrier) so later modules see its principals.
 - name: Apply directory modules
   hosts: role_dc:role_child_dc
   gather_facts: false

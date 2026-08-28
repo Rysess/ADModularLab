@@ -18,8 +18,7 @@
   ansible.builtin.debug:
     var: laps_module.output
 
-# Forest-wide and irreversible. Guarded on the attribute rather than run_once,
-# which is unreliable under the free strategy.
+# Forest-wide and irreversible; guarded on the attribute (run_once is unreliable here).
 - name: Extend the schema for Windows LAPS
   ansible.windows.win_powershell:
     error_action: continue

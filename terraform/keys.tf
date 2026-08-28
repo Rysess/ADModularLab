@@ -35,8 +35,7 @@ resource "random_password" "lab" {
   length  = each.value
   special = false
 
-  # AD and SQL enforce complexity; without minimums an all-lowercase result
-  # is possible and account creation fails.
+  # Minimums guarantee the complexity AD and SQL require.
   min_upper   = 2
   min_lower   = 2
   min_numeric = 2

@@ -36,8 +36,7 @@ VPN_PUB="$(terraform output -raw vpn_public_ip)"
 cd "$HERE/ansible"
 ansible-playbook site.yml
 
-# Only the credentials the lab actually uses: a one-DC lab has no trust, SQL or
-# Elastic password to show.
+# Only the credentials the lab actually uses.
 cd "$HERE/terraform"
 HOSTS_JSON="$(terraform output -json hosts)"
 has() { echo "$HOSTS_JSON" | jq -e "$1" >/dev/null; }

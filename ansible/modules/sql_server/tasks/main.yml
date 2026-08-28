@@ -1,6 +1,5 @@
 ---
-# become is required: SQL setup encrypts its config XML through the CryptoAPI,
-# which cannot reach the machine key container under a WinRM network logon.
+# become: SQL's CryptoAPI config can't reach the machine key under WinRM logon.
 - name: Install SQL Server Express and the client tools
   chocolatey.chocolatey.win_chocolatey:
     name: "{{ sql_server_packages }}"
@@ -27,8 +26,7 @@
     state: started
     start_mode: auto
 
-# Express ships with TCP/IP disabled on a dynamic port. The instance key is
-# version-stamped, so it is resolved through the Instance Names map.
+# TCP/IP is off on a dynamic port; resolve the instance via the Instance Names map.
 - name: Enable TCP/IP on a static port
   ansible.windows.win_powershell:
     parameters:
@@ -113,8 +111,7 @@
     state: absent
     reorganize: false
 
-# The package never passes /SQLSYSADMINACCOUNTS, so the only sysadmin is
-# whoever ran setup: SYSTEM, not the Administrator Ansible connects as.
+# The package never passes /SQLSYSADMINACCOUNTS, so only SYSTEM is sysadmin.
 - name: Grant the local administrators sysadmin
   ansible.windows.win_powershell:
     error_action: continue

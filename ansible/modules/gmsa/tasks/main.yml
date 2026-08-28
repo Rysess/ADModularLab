@@ -58,8 +58,7 @@
       Import-Module ActiveDirectory
       $Ansible.Changed = $false
 
-      # Not Get-KdsRootKey: it emits one array-valued object rather than
-      # unrolling, so $_.KeyId becomes an Object[]. Object name is the GUID.
+      # Not Get-KdsRootKey: it emits one array-valued object; name is the GUID.
       $cfg = (Get-ADRootDSE).configurationNamingContext
       $base = "CN=Master Root Keys,CN=Group Key Distribution Service,CN=Services,$cfg"
       $known = @(

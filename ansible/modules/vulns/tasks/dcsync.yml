@@ -1,6 +1,5 @@
 ---
-# No native module for directory ACLs, so the domain's nTSecurityDescriptor is
-# edited directly: read, add only missing ACEs, write once.
+# No native ACL module: edit the domain nTSecurityDescriptor directly.
 - name: Grant replication rights on the domain naming context
   ansible.windows.win_powershell:
     parameters:

@@ -8,9 +8,7 @@ all_dc_domains: "{{ all_dc_hosts | map('extract', hostvars, 'domain_name') | lis
 # domain name -> the controller serving it, e.g. {'lab.local': 'dc01'}.
 dc_hosts_by_domain: "{{ dict(all_dc_domains | zip(all_dc_hosts)) }}"
 
-# The controller for this host's own domain. A host with no domain (a standalone
-# vpn box) falls back to the only controller; declare 'domain' on it to choose
-# in a multi-domain lab.
+# Controller for this host's domain; a domainless host falls back to the first.
 domain_dc_host: >-
   {{ dc_hosts_by_domain.get(domain_name | default(''),
        groups['role_dc'] | default([]) | first | default('')) }}
@@ -23,6 +21,5 @@ domain_netbios: "{{ domain_name.split('.')[0] | upper }}"
 
 child_dc_user: svc_childdc
 
-# Applied to controllers ahead of every other module, because modules on other
-# hosts name the principals these create.
+# Applied to controllers before other modules, which name what these create.
 staged_modules: [identity]

@@ -1,8 +1,6 @@
 locals {
   ubuntu_release = tostring(try(local.defaults.ubuntu_release, "22.04"))
 
-  # Per host, falling back to the lab default. One AMI lookup per
-  # version+edition in use, so a lab can mix 2019/2022/2025 and Full/Core.
   host_windows_version = {
     for k, h in local.hosts : k => tostring(try(
       h.windows_version, local.defaults.windows_version, "2022"
@@ -13,8 +11,7 @@ locals {
       h.windows_edition, local.defaults.windows_edition, "full"
     ))
   }
-  # "Full" is Desktop Experience, "Core" has no desktop shell. distinct() first:
-  # hosts sharing a version and edition would collide as duplicate map keys.
+  # distinct(): hosts sharing version+edition would collide as map keys.
   windows_image_keys = distinct([
     for k, h in local.windows_hosts :
     "${local.host_windows_version[k]}-${local.host_windows_edition[k]}"
@@ -54,8 +51,7 @@ data "aws_ami" "windows" {
   }
 }
 
-# Only a pinned AMI triggers replacement; drift of the "latest" data sources is
-# ignored so a new upstream image never rebuilds a live lab.
+# Only a pinned AMI triggers replacement; "latest" drift never rebuilds a live lab.
 resource "terraform_data" "ami_pin" {
   for_each = local.hosts
   input    = try(each.value.ami, "")
@@ -101,7 +97,6 @@ resource "aws_instance" "host" {
     )
   }
 
-  # No credential in user-data: it is readable from IMDS.
   user_data = each.value.os == "windows" ? file("${path.module}/templates/winrm.ps1") : null
 
   tags = merge(local.lab_tags, {

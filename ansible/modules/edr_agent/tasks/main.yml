@@ -32,8 +32,7 @@
 
 - name: Decide what the agent needs
   ansible.builtin.set_fact:
-    # reinstall rather than enroll: `elastic-agent enroll` refuses to repair an
-    # existing install ("program files are not owned by the root user").
+    # reinstall, not enroll: enroll refuses to repair an existing install.
     edr_agent_action: >-
       {{ 'install' if not edr_agent_installed.stat.exists
          else ('none' if 'enrolled' in (edr_agent_status.output | default([]))
@@ -133,8 +132,7 @@
         dest: "{{ edr_agent_secret_dir }}\\fleet-token"
       no_log: true
 
-    # elastic-agent writes progress to stderr; piping that through PowerShell's
-    # error stream fails the task spuriously and mangles the message.
+    # elastic-agent writes to stderr; the PS error stream would fail the task.
     - name: Install and enrol the agent
       ansible.windows.win_powershell:
         error_action: continue
@@ -162,9 +160,7 @@
           $outFile = Join-Path $Workdir 'agent.out'
           $errFile = Join-Path $Workdir 'agent.err'
 
-          # Returns one object: anything written to the output stream inside a
-          # function becomes part of its return value, so the transcript cannot
-          # be emitted here without being mistaken for the exit code.
+          # Output-stream writes inside a function become its return value.
           function Invoke-Agent($Path, $Arguments) {
               $p = Start-Process -FilePath $Path -ArgumentList $Arguments `
                   -NoNewWindow -Wait -PassThru `
@@ -214,8 +210,7 @@
     state: directory
   loop: "{{ edr_agent_excluded_dirs }}"
 
-# Registered against Defend's trusted applications list, which is agnostic and
-# applies to every policy, so the entry is created once per lab.
+# Defend trusted-apps list is policy-agnostic, so create once per lab.
 - name: Exclude the directories from Elastic Defend
   ansible.windows.win_uri:
     url: "https://{{ elastic_private_ip }}:{{ edr_agent_kibana_port }}/api/exception_lists/items"

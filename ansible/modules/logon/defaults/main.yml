@@ -1,13 +1,9 @@
 ---
-# Bare names are looked up locally first, then in the domain, so domain groups
-# can be written plainly. Prefix a local principal with .\ or BUILTIN\.
-
-# Local group membership.
+# Bare names resolve locally then in the domain; prefix a local one with .\ or BUILTIN\.
 logon_admins: []
 logon_rdp: []
 
-# User rights. An empty list leaves the right at its Windows default; a
-# non-empty one replaces it outright.
+# An empty right keeps its Windows default; a non-empty one replaces it.
 logon_interactive: []
 logon_batch: []
 logon_deny_interactive: []

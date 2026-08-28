@@ -2,14 +2,5 @@
 acl_ad_retries: 5
 acl_ad_delay: 10
 
-# Each grant gives <principal> the <right> over <target>. principal and target
-# are sAMAccountNames (a user, group, or computer; the trailing $ on a computer
-# is optional). right is an Active Directory right:
-#   GenericAll, GenericWrite, WriteDacl, WriteOwner, WriteProperty, Self,
-#   ExtendedRight (all extended rights, e.g. DCSync / ForceChangePassword).
-# access is Allow (default) or Deny.
-#
-#   acl_grants:
-#     - { principal: Helpdesk, target: Tier0-Admins, right: GenericAll }
-#     - { principal: DevOps,   target: svc_sql,      right: GenericWrite }
+# Each grant: { principal, target, right[, access] }. See README for rights.
 acl_grants: []
