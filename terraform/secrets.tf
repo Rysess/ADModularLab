@@ -23,8 +23,7 @@ locals {
     host_admin_passwords = local.windows_admin_passwords
   }
 
-  # Both CIDR and network/netmask: OpenVPN wants the latter and Ansible has no
-  # netaddr filters available.
+  # network/netmask too: OpenVPN needs it and Ansible has no netaddr filters.
   lab_facts = {
     lab_name           = local.lab.name
     lab_region         = local.lab.region
@@ -52,8 +51,7 @@ resource "local_file" "lab_facts" {
 }
 
 locals {
-  # ansible_password must be a host var: under delegate_to a group_vars
-  # template keyed on inventory_hostname resolves to the wrong host.
+  # Host var, not group_vars: delegate_to would resolve it to the wrong host.
   host_vars = {
     for k, h in local.hosts : k => merge(
       local.host_module_vars[k],

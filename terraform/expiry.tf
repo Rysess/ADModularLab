@@ -1,6 +1,4 @@
-# Terminates (default) or stops the lab when its ExpiresAt tag passes. Runs in
-# AWS rather than a local cron, which would not fire with the operator's machine
-# off. Set lab.expires_action: stop to keep the disks and just halt compute.
+# Terminates (or stops, with expires_action: stop) the lab when ExpiresAt passes.
 
 locals {
   expires_enabled = try(local.lab.expires_enabled, true)
@@ -31,7 +29,7 @@ data "aws_iam_policy_document" "expire" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
-  # DescribeInstances cannot be scoped to a resource or conditioned on tags.
+  # DescribeInstances cannot be tag-scoped.
   statement {
     actions   = ["ec2:DescribeInstances"]
     resources = ["*"]

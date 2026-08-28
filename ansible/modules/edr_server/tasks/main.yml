@@ -60,8 +60,7 @@
     groups: docker
     append: true
 
-# update: false — the password substituted into the tracked .env below dirties
-# the tree and a pull would refuse. Remove the directory to move the pin.
+# update: false — the substituted password dirties the tree; a pull would refuse.
 - name: Clone the elastic-container stack definition
   ansible.builtin.git:
     repo: "{{ edr_server_repo }}"

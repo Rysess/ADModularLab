@@ -1,7 +1,6 @@
 ---
-# Renamed by site.yml before this runs: a DC cannot be renamed once promoted.
-# microsoft.ad.domain installs the features, promotes only when needed, and
-# owns the reboot.
+# Renamed by site.yml first (a promoted DC cannot be renamed).
+# microsoft.ad.domain installs features, promotes when needed, owns the reboot.
 - name: Promote to domain controller
   microsoft.ad.domain:
     dns_domain_name: "{{ domain_name }}"

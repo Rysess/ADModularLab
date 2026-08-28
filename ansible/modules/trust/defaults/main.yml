@@ -1,7 +1,5 @@
 ---
-# { name, type, direction } per partner; dns_server only for a domain outside
-# the lab. domain_trust writes one side, so both DCs run this with the same
-# trust_password.
+# { name, type, direction } per partner; both DCs run this with the same trust_password.
 trust_partners: []
 
 trust_default_type: forest

@@ -38,9 +38,7 @@ locals {
   }
 }
 
-# Captured once and held in state (timestamp() would diff every tagged resource
-# on every plan). run.sh passes a fresh deploy_stamp each deploy, which resets
-# this to now, so re-running run.sh extends the expiry lease.
+# Held in state; run.sh's deploy_stamp resets it, so re-running extends the lease.
 resource "time_static" "lab_created" {
   triggers = {
     lab_name      = local.lab.name

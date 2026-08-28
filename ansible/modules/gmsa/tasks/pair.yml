@@ -1,6 +1,5 @@
 ---
-# Key then account, so the account binds to that key. Both guarded; a re-run
-# rebinds nothing, msDS-ManagedPasswordId is fixed at creation.
+# Key then account, so it binds to that key; a re-run rebinds nothing.
 - name: Name this iteration's gMSA
   ansible.builtin.set_fact:
     gmsa_pair_name: "{{ gmsa_name_prefix }}{{ gmsa_index }}"

@@ -1,6 +1,5 @@
 ---
-# false uninstalls the Windows-Defender feature, which is what actually sticks
-# on Server; Set-MpPreference alone is reverted by tamper protection.
+# false uninstalls the feature (Set-MpPreference alone is reverted by tamper protection).
 defender_enabled: true
 
 # Created whether or not Defender is on, and excluded from it when it is.

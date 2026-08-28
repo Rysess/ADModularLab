@@ -7,8 +7,7 @@ shares_netbios: "{{ domain_netbios }}"
 shares_ad_retries: 5
 shares_ad_delay: 10
 
-# Only the groups the shares below are ACL'd to. The org chart that fills them
-# is the identity module's.
+# Only the groups the shares are ACL'd to; identity fills them.
 shares_ad_groups:
   - Finance-Team
   - IT-Admins

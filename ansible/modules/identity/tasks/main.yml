@@ -1,9 +1,7 @@
 ---
-# Runs on the controller that serves the domain, so no delegation: identity_domain
-# is this host's own domain and a child_dc populates its child the same way.
+# Runs on the controller for identity_domain; a child_dc populates its child.
 
-# Seeded so an empty identity_users or identity_groups still leaves a list, not
-# an undefined variable, for the tasks below.
+# Seeded so an empty users/groups map still leaves a list, not undefined.
 - name: Seed the normalised lists
   ansible.builtin.set_fact:
     identity_group_list: []
@@ -88,8 +86,7 @@
   retries: "{{ identity_ad_retries }}"
   delay: "{{ identity_ad_delay }}"
 
-# Which declared groups already exist (built-ins like Domain Admins, or groups
-# another module made). Those are only populated, never recreated or rescoped.
+# Existing groups (built-ins, or made elsewhere) are populated, not recreated.
 - name: Find which declared groups already exist
   ansible.windows.win_powershell:
     error_action: continue
@@ -107,8 +104,7 @@
   register: identity_existing_groups
   changed_when: false
 
-# Groups before users so membership (added last) can name either. Only groups
-# that do not yet exist are created, so a declared built-in keeps its scope.
+# Only absent groups are created, so a declared built-in keeps its scope.
 - name: Create groups
   microsoft.ad.group:
     name: "{{ item.name }}"
@@ -129,8 +125,7 @@
 
 - name: Create users
   microsoft.ad.user:
-    # Located by sAMAccountName (identity), so renaming the display name renames
-    # the object rather than orphaning it or colliding on the CN.
+    # identity = sAMAccountName: a display-name change renames, not orphans.
     identity: "{{ item.name }}"
     name: "{{ item.display }}"
     sam_account_name: "{{ item.name }}"
@@ -156,8 +151,7 @@
 
 - name: Populate group membership
   microsoft.ad.group:
-    # No scope here: the group already exists, and passing one would try to
-    # re-cast a group whose real scope differs (a domain-local built-in).
+    # No scope: the group exists; passing one could re-cast a built-in.
     name: "{{ item.name }}"
     path: "{{ item.path if item.path | default('') else omit }}"
     members:

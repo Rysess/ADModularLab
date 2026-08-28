@@ -1,5 +1,4 @@
-# The first AZ the account can actually use in this region, rather than assuming
-# "<region>a" exists (it may not in 2-AZ or opt-in regions).
+# First usable AZ, not an assumed "<region>a".
 data "aws_availability_zones" "available" {
   state = "available"
 }
@@ -38,7 +37,7 @@ resource "aws_route_table_association" "lab" {
   route_table_id = aws_route_table.lab.id
 }
 
-# Return path for VPN clients. Requires source_dest_check = false on the host.
+# Return path for VPN clients; needs source_dest_check = false on the host.
 resource "aws_route" "vpn_clients" {
   count                  = length(local.vpn_keys) > 0 ? 1 : 0
   route_table_id         = aws_route_table.lab.id
