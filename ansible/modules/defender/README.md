@@ -17,7 +17,7 @@ does its own monitoring and has its own exclusion list.
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
 | `defender_enabled` | `true` | `false` uninstalls the `Windows-Defender` feature |
-| `defender_excluded_dirs` | `['C:\excluded']` | Created, and excluded when Defender is on |
+| `defender_excluded_dirs` | `[]` | Directories to create and (when Defender is on) exclude; none by default |
 | `defender_exclusion_extensions` | `[]` | Excluded file extensions |
 | `defender_exclusion_processes` | `[]` | Excluded process names |
 
@@ -35,8 +35,9 @@ modules:
 `Set-MpPreference -DisableRealtimeMonitoring`, which tamper protection reverts.
 The change may require a reboot, which the module performs.
 
-The excluded directories are created whether or not Defender is enabled, so a
-lab has the same paths either way.
+No directory is excluded by default; `defender_excluded_dirs` is opt-in. Any
+directory listed is created whether or not Defender is enabled, so a lab has the
+same paths either way.
 
 ## Footprint
 

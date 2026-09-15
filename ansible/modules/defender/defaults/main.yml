@@ -2,9 +2,9 @@
 # false uninstalls the feature (Set-MpPreference alone is reverted by tamper protection).
 defender_enabled: true
 
-# Created whether or not Defender is on, and excluded from it when it is.
-defender_excluded_dirs:
-  - 'C:\excluded'
+# Opt-in. Any directory listed is created whether or not Defender is on, and
+# excluded from it when it is. Empty by default: no directory is excluded.
+defender_excluded_dirs: []
 
 defender_exclusion_extensions: []
 defender_exclusion_processes: []

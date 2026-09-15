@@ -138,6 +138,13 @@ hosts:
     modules:
       - shares
       - sql_server
+      # Seed live logon sessions holding a TGT, as if these users had signed
+      # in. password defaults to the lab user password; domain to this host's.
+      - name: session
+        vars:
+          session_users:
+            - user: LabUser1
+            - user: alice
       - name: laps
         vars:
           # Anything beyond Domain Admins is the misconfiguration.

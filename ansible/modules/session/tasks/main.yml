@@ -1,0 +1,149 @@
+---
+# Windows only. Seeds a live logon session per entry in session_users: a
+# scheduled task that runs as the domain user with a stored password, so the
+# logon caches the account's credentials and obtains a Kerberos TGT, and a
+# keep-alive process holds that session open. Runs on a domain-joined host.
+
+- name: Normalise the session list
+  ansible.builtin.set_fact:
+    session_list: "{{ session_list | default([]) + [entry] }}"
+  vars:
+    domain: "{{ item.domain | default(domain_name) }}"
+    netbios: "{{ domain.split('.')[0] | upper }}"
+    entry:
+      user: "{{ item.user }}"
+      password: "{{ item.password | default(lab_user_password) }}"
+      domain: "{{ domain }}"
+      principal: "{{ netbios }}\\{{ item.user }}"
+      task_name: "{{ session_task_prefix }}-{{ item.user }}"
+  loop: "{{ session_users }}"
+  loop_control:
+    label: "{{ item.user }}"
+  no_log: true
+
+# A stored-password task logs the user on as a batch job, so the account needs
+# SeBatchLogonRight. A member server grants it implicitly when the task is
+# registered, but a domain controller does not (the Default Domain Controllers
+# policy fixes the right), so grant it here for every host role. Additive, so
+# the existing holders (Administrators, Backup Operators, ...) are kept.
+- name: Grant the session users the batch logon right
+  ansible.windows.win_user_right:
+    name: SeBatchLogonRight
+    users: "{{ session_list | map(attribute='principal') | list }}"
+    action: add
+
+# logon_type: password stores the credential and does a real interactive/batch
+# logon (not S4U, not network), which is what yields a cached TGT. The boot
+# trigger re-establishes the session after a reboot; registration starts it now.
+- name: Register a logon session task for each user
+  community.windows.win_scheduled_task:
+    name: "{{ item.task_name }}"
+    path: "{{ session_task_folder }}"
+    description: "Lab: live logon session for {{ item.principal }} (holds a TGT)."
+    username: "{{ item.principal }}"
+    password: "{{ item.password }}"
+    logon_type: password
+    run_level: limited
+    multiple_instances: 2
+    disallow_start_if_on_batteries: false
+    stop_if_going_on_batteries: false
+    start_when_available: true
+    execution_time_limit: PT0S
+    actions:
+      - path: "{{ session_keepalive_path }}"
+        arguments: "{{ session_keepalive_arguments }}"
+    triggers:
+      - type: boot
+      - type: registration
+    enabled: true
+    state: present
+  loop: "{{ session_list }}"
+  loop_control:
+    label: "{{ item.principal }}"
+  no_log: true
+
+# The registration trigger starts a freshly created task, but a task that
+# already existed (unchanged) or whose process was killed will not be running.
+- name: Ensure each session task is running
+  ansible.windows.win_powershell:
+    error_action: stop
+    parameters:
+      Folder: "{{ session_task_folder }}"
+      Names: "{{ session_list | map(attribute='task_name') | list }}"
+    script: |
+      [CmdletBinding()]
+      param(
+        [Parameter(Mandatory)][string]$Folder,
+        [Parameter(Mandatory)][string[]]$Names
+      )
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      foreach ($n in $Names) {
+          $info = Get-ScheduledTask -TaskPath "$Folder\" -TaskName $n
+          if ($info.State -ne 'Running') {
+              Start-ScheduledTask -TaskPath "$Folder\" -TaskName $n
+              Write-Output "started $n"
+              $Ansible.Changed = $true
+          } else {
+              Write-Output "$n already running"
+          }
+      }
+  register: session_started
+
+# SYSTEM: klist -li reads another logon session's ticket cache only with TCB.
+# Retries because the batch logon and its TGT appear a moment after the start.
+- name: Confirm each user has a live session holding a TGT
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      Users: "{{ session_list | map(attribute='user') | list }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string[]]$Users)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      # LogonId -> DOMAIN\name, from the same CIM classes sessions.yml uses.
+      $acctById = @{}
+      foreach ($link in Get-CimInstance Win32_LoggedOnUser) {
+          $a = $link.Antecedent
+          $who = if ($a.Domain) { "$($a.Domain)\$($a.Name)" } else { $a.Name }
+          $acctById[$link.Dependent.LogonId] = $who
+      }
+
+      $missing = $false
+      foreach ($u in $Users) {
+          $luids = $acctById.GetEnumerator() |
+              Where-Object { ($_.Value -split '\\')[-1].ToLower() -eq $u.ToLower() } |
+              ForEach-Object { $_.Key } | Select-Object -Unique
+          if (-not $luids) {
+              Write-Output ("{0,-20} : NO logon session yet" -f $u)
+              $missing = $true
+              continue
+          }
+          $found = $false
+          foreach ($luid in $luids) {
+              $hex = '0x{0:x}' -f [int64]$luid
+              $tickets = & klist -li $hex 2>&1 | Out-String
+              if ($tickets -match 'krbtgt/') {
+                  Write-Output ("{0,-20} : session {1}, TGT present" -f $u, $hex)
+                  $found = $true
+              }
+          }
+          if (-not $found) {
+              Write-Output ("{0,-20} : session up but no TGT cached yet" -f $u)
+              $missing = $true
+          }
+      }
+      if ($missing) { $Ansible.Failed = $true }
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  register: session_verify
+  until: session_verify is succeeded
+  retries: "{{ session_wait_retries }}"
+  delay: "{{ session_wait_delay }}"
+
+- name: Report the seeded sessions
+  ansible.builtin.debug:
+    var: session_verify.output

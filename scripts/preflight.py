@@ -350,6 +350,42 @@ def check_acl_vars(where, mv, declared, problems, warns):
                                  f"this lab creates; it must already exist")
 
 
+def check_session_vars(where, mv, declared, problems, warns):
+    users = mv.get("session_users")
+    if users is None:
+        return
+    if not isinstance(users, list):
+        problems.append(f"{where}: session_users must be a list")
+        return
+    seen = set()
+    for entry in users:
+        if not isinstance(entry, dict):
+            problems.append(f"{where}: session_users entry {entry!r} must be a mapping "
+                            f"with at least a 'user' key")
+            continue
+        extra = set(entry) - {"user", "password", "domain"}
+        if extra:
+            problems.append(f"{where}: session_users entry {entry!r} has unknown keys "
+                            f"{sorted(extra)}; expected 'user', 'password', 'domain'")
+        user = entry.get("user")
+        if not isinstance(user, str) or not user.strip():
+            problems.append(f"{where}: session_users entry {entry!r} needs a non-empty 'user'")
+            continue
+        for key in ("password", "domain"):
+            if key in entry and (not isinstance(entry[key], str) or not entry[key].strip()):
+                problems.append(f"{where}: session_users {user!r} {key!r} must be a "
+                                f"non-empty string")
+        if user.lower() in seen:
+            problems.append(f"{where}: session_users lists {user!r} twice")
+        seen.add(user.lower())
+        # A user from another domain won't be in `declared`; only flag a
+        # same-domain user this lab file plainly does not create.
+        if "domain" not in entry and user.lower() not in declared \
+                and not re.match(r"^LabUser\d+$", user):
+            warns.append(f"{where}: session_users user {user!r} matches no user this lab "
+                         f"file creates; it must already exist or the logon will fail")
+
+
 def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
     where = f"{host.get('name')}: module {mod!r}"
     if mod == "identity":
@@ -360,6 +396,8 @@ def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
         check_vpn_vars(where, mv, problems)
     elif mod == "acl":
         check_acl_vars(where, mv, declared, problems, warns)
+    elif mod == "session":
+        check_session_vars(where, mv, declared, problems, warns)
 
 
 def module_vars(host):

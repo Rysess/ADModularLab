@@ -112,6 +112,7 @@ module may be assigned to; `run.sh` rejects any other placement.
 | [`identity`](ansible/modules/identity/README.md) | windows | dc / child_dc | Domain users, groups and OUs. |
 | [`logon`](ansible/modules/logon/README.md) | windows | any | Who may log on to a host, and how. |
 | [`gmsa`](ansible/modules/gmsa/README.md) | windows | dc | KDS root keys and gMSA accounts. |
+| [`session`](ansible/modules/session/README.md) | windows | dc / child_dc / member | Logs domain users on via stored-password tasks, seeding live sessions that hold a TGT. |
 | [`shares`](ansible/modules/shares/README.md) | windows | any | SMB shares of synthetic data with per-group ACLs. |
 | [`sql_server`](ansible/modules/sql_server/README.md) | windows | any | SQL Server Express with a demo database. |
 | [`adcs`](ansible/modules/adcs/README.md) | windows | any | Enterprise Root CA with toggleable ESC1/ESC4/ESC8/ESC11. |
