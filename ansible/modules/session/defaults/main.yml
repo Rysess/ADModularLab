@@ -1,25 +1,16 @@
 ---
-# Each entry seeds a live logon session for a domain user on this host. A
-# scheduled task runs as that user with a stored password, so Windows performs
-# a real credential logon that caches the account's secrets and obtains a
-# Kerberos TGT; a long-running keep-alive process holds the logon session (and
-# its TGT) open in LSASS for the life of the lab.
+# One entry: the domain user to log on at this host's console via Winlogon
+# autologon, seeding a live interactive session that shows up as a logged-on
+# user (Task Manager Users tab, quser), holds a Kerberos TGT, and leaves the
+# account's secrets in LSASS for credential-theft tooling. Windows has a single
+# console, so the module seeds one interactive session per host.
 #
-#   - user: alice              # sAMAccountName (required)
-#     password: Summer2025!    # defaults to the lab user password
-#     domain: lab.local        # defaults to this host's domain
+#   session_users:
+#     - user: alice            # sAMAccountName (required)
+#       password: Summer2025!  # defaults to the lab user password
+#       domain: lab.local      # defaults to this host's domain
 session_users: []
 
-# The keep-alive each session runs. It sleeps effectively forever so the logon
-# session persists; the TGT is obtained at logon, not by this command.
-session_keepalive_path: powershell.exe
-session_keepalive_arguments: >-
-  -NoProfile -NonInteractive -WindowStyle Hidden
-  -Command "while ($true) { Start-Sleep -Seconds 3600 }"
-
-# Scheduled task naming. One task per user, LabSession-<user> under this folder.
-session_task_prefix: LabSession
-session_task_folder: \LabSessions
-
-session_wait_retries: 12
+# Poll after the reboot for the console logon and its TGT to appear.
+session_wait_retries: 18
 session_wait_delay: 10

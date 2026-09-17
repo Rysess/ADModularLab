@@ -250,9 +250,13 @@ def check_identity_vars(where, mv, problems, warns):
                      f"name")
 
 
-def declared_principals(hosts):
+def declared_principals(hosts, lab=None):
     """Names this lab file creates, for spotting a logon list that misspells one."""
     names = set(WELL_KNOWN)
+    # The dc role always creates the domain admin and LabUser1..N.
+    admin = str((lab or {}).get("domain_admin", "")).strip().lower()
+    if admin:
+        names.add(admin)
     default_groups = {g.lower() for g in defaults_of("identity")
                       .get("identity_groups", {})}
     for h in hosts:
@@ -357,6 +361,10 @@ def check_session_vars(where, mv, declared, problems, warns):
     if not isinstance(users, list):
         problems.append(f"{where}: session_users must be a list")
         return
+    if len(users) > 1:
+        problems.append(f"{where}: session_users seeds one interactive console session "
+                        f"per host (Windows has a single console), so list exactly one "
+                        f"user; put further sessions on other hosts")
     seen = set()
     for entry in users:
         if not isinstance(entry, dict):
@@ -601,7 +609,7 @@ def main():
     for h in hosts:
         host_modules[id(h)] = module_names(h, problems)
     lab_modules = {m for mods in host_modules.values() for m in mods}
-    declared = declared_principals(hosts)
+    declared = declared_principals(hosts, lab)
 
     for h in hosts:
         name = h.get("name", "")

@@ -1,9 +1,11 @@
 # Module: `session`
 
-Seeds a live logon session for one or more domain users on this host: each gets
-a running session that holds a valid Kerberos TGT, exactly as if the user had
-signed in. The credential material is then present in LSASS for the attacks that
-depend on it (ticket theft, `sekurlsa`, delegation abuse, BloodHound sessions).
+Seeds a live **interactive console session** for a domain user on this host: the
+account shows up as a logged-on user (Task Manager's *Users* tab, `quser`,
+`qwinsta`), holds a valid Kerberos TGT, and leaves its full credential set in
+LSASS — a realistic "someone is signed in here" target for credential-theft
+tooling (`sekurlsa::logonpasswords`, Rubeus, token impersonation, BloodHound
+sessions).
 
 ## Requirements
 
@@ -14,93 +16,91 @@ depend on it (ticket theft, `sekurlsa`, delegation abuse, BloodHound sessions).
 | `requires_role` | `dc`, `child_dc` or `member` |
 | `requires_lab_role` | `dc` |
 
-The host must be domain-joined — only then can it log a domain user on and get a
-TGT — so the module runs on a `dc`, `child_dc` or `member`, never a standalone
-box.
+The host must be domain-joined so it can log a domain user on and obtain a TGT,
+so the module runs on a `dc`, `child_dc` or `member`, never a standalone box.
+**Desktop Experience** (`windows_edition: full`, the default) gives the session
+a real desktop; on `core` the logon still happens and is dumpable, but there is
+no GUI to see it in.
 
 ## Variables
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `session_users` | `[]` | Users to log on; `{ user, password?, domain? }` per entry |
-| `session_keepalive_path` | `powershell.exe` | Keep-alive process image |
-| `session_keepalive_arguments` | a `Start-Sleep` loop | Its arguments |
-| `session_task_prefix` | `LabSession` | Task name prefix (`LabSession-<user>`) |
-| `session_task_folder` | `\LabSessions` | Task Scheduler folder |
-| `session_wait_retries` / `session_wait_delay` | `12` / `10` | TGT verification poll |
+| `session_users` | `[]` | Exactly one entry: `{ user, password?, domain? }` |
+| `session_wait_retries` / `session_wait_delay` | `18` / `10` | Post-reboot poll for the session + TGT |
 
-Each `session_users` entry needs a `user` (the sAMAccountName). `password`
-defaults to the lab user password (correct for the `LabUser*` accounts and any
-`identity` user without an explicit password); `domain` defaults to this host's
-domain, and only needs setting to log on a user from another domain across a
-trust.
+`session_users` takes **one** entry — Windows has a single console, so one
+interactive session per host; put further sessions on other hosts. The entry
+needs a `user` (sAMAccountName). `password` defaults to the lab user password
+(correct for the `LabUser*` accounts and any `identity` user without an explicit
+password); `domain` defaults to this host's domain and only needs setting to log
+on a user from another domain across a trust.
 
 ```yaml
-- name: srv-win01
+- name: ws01
   role: member
   domain: lab.local
   modules:
     - name: session
       vars:
         session_users:
-          - user: LabUser1          # lab user password by default
-          - user: alice
-          - user: svc_sql           # identity user with a custom password
-            password: Summer2025!
-          - user: partneradmin      # a user from a trusted domain
-            domain: partner.local
-            password: Autumn2025!
+          - user: it.martin        # lab user password by default
+```
+
+To log a Domain Admin on (a juicy dump target on the DC), pass the account and
+its password explicitly:
+
+```yaml
+- name: dc01
+  role: dc
+  domain: lab.local
+  modules:
+    - name: session
+      vars:
+        session_users:
+          - user: john.john
+            password: "{{ domain_admin_pw }}"   # the DA password from Terraform
 ```
 
 ## How it works
 
-For each user the module registers a scheduled task under
-`\LabSessions` that runs as `DOMAIN\user` with the password **stored**
-(`logon_type: password`). A stored-password task makes Windows perform a real
-interactive/batch logon with that credential — not an S4U logon, which would
-produce no network credentials and no TGT. That logon caches the account's
-secrets and requests a Kerberos TGT, which lands in the new logon session's
-ticket cache.
+The module configures **Winlogon autologon** — `AutoAdminLogon`,
+`DefaultDomainName`, `DefaultUserName`, `DefaultPassword` (plus `ForceAutoLogon`
+so a logoff re-logs on, and no `AutoLogonCount` so it never expires) — and
+reboots once. At boot the console logs the account on: a genuine **interactive
+(type 2)** logon that caches the account's secrets in LSASS and requests a
+Kerberos TGT. Because it is a real console session it appears in the *Users* tab
+and `quser`, and it survives reboots.
 
-The task's action is a keep-alive that sleeps in a loop, so the logon session
-(and its TGT) stays resident in LSASS instead of being torn down when a
-short-lived process exits. A `boot` trigger re-establishes the session after a
-reboot; a `registration` trigger starts it the moment the task is created, and
-the module also explicitly starts any task that is not already running, so a
-re-run brings a killed session back.
+`DefaultPassword` is stored in cleartext under the `Winlogon` key — deliberately;
+it is itself a classic lab artifact — so the tasks that touch it are `no_log`.
+On a domain controller the module also grants the account `SeInteractiveLogonRight`
+(the Default Domain Controllers policy otherwise limits "Allow log on locally"
+to admin groups); that grant is a local LSA edit a background Group Policy
+refresh can reclaim after ~90 minutes on a DC, but a session already established
+keeps its TGT. Running `session` on a member — the realistic placement — has no
+such caveat.
 
-A stored-password task logs the user on as a batch job, so the account needs
-`SeBatchLogonRight`. A member server grants that implicitly when the task is
-registered, but a domain controller does not — the Default Domain Controllers
-policy fixes the right to `Administrators`, `Backup Operators` and
-`Performance Log Users` — so the module grants it explicitly (additively, via
-`win_user_right`) for every host role. Take care combining this with the
-`logon` module: a `logon_deny_*` right, or a replaced `logon_batch` list that
-excludes the user, will block the logon.
-
-On a domain controller the grant is a local LSA edit that a background Group
-Policy refresh can reclaim after ~90 minutes; a session already established
-keeps its TGT, but a post-reboot re-logon would then need the grant reapplied
-(re-run the module). Running `session` on a member server — the realistic
-placement — has no such caveat.
+Only one console session exists at a time. A trainee who RDPs in lands in a
+*new* session, so the seeded "victim" session stays put as the target.
 
 ## Verification
 
-After starting the tasks the module maps each user to its logon session
-(`Win32_LoggedOnUser` / `Win32_LogonSession`, as `sessions.sh` does) and runs
-`klist -li <luid>` as `SYSTEM` to confirm a `krbtgt` ticket is cached. It polls
-briefly because the ticket appears a moment after the logon, and fails the play
-if a session or its TGT never shows up — a wrong password surfaces here rather
-than silently leaving a dead task. `./sessions.sh` does not list these: a
-stored-password task is a batch logon (type 4), not console or RDP.
+After the reboot the module confirms, as `SYSTEM`, that the account is on a WTS
+session (`quser`) *and* that its logon session has a `krbtgt` ticket
+(`klist -li <luid>`), polling briefly and failing the play if either is missing
+— so a wrong password surfaces here rather than leaving a dead autologon. Unlike
+a batch or service logon, this session is visible to `query user` / `qwinsta`
+and the Task Manager *Users* tab.
 
 ## Creates
 
-One scheduled task per user under `\LabSessions`, and the logon session each
-keeps alive. No AD objects — the users must already exist (the `dc` role's
-`LabUser*`, or `identity` / `vulns` accounts). Removing the module's effect
-means deleting the tasks; turning it off in `lab.yml` does not.
+Winlogon autologon registry values and the interactive logon session they
+produce. No AD objects — the user must already exist (the `dc` role's
+`LabUser*`, or `identity` / `vulns` accounts). To undo it, clear the `Winlogon`
+`AutoAdminLogon`/`Default*` values and reboot; turning the module off in
+`lab.yml` does not.
 
 ## Footprint
 
-One near-idle keep-alive process per user. Seconds to apply. No reboot.
+One always-on console logon. Seconds to apply, plus one reboot.

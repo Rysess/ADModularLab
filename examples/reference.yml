@@ -138,12 +138,12 @@ hosts:
     modules:
       - shares
       - sql_server
-      # Seed live logon sessions holding a TGT, as if these users had signed
-      # in. password defaults to the lab user password; domain to this host's.
+      # Seed a live interactive console session (Task Manager Users tab, quser)
+      # holding a TGT, as if this user had signed in. One per host. password
+      # defaults to the lab user password; domain to this host's.
       - name: session
         vars:
           session_users:
-            - user: LabUser1
             - user: alice
       - name: laps
         vars:
