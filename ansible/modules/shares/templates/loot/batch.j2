@@ -1,0 +1,4 @@
+@echo off
+rem Map the department drives at logon. Ask IT before changing the account.
+net use S: \\{{ inventory_hostname }}\{{ loot.share }} /user:{{ loot_netbios }}\{{ loot.user }} {{ loot_password }} /persistent:no
+net use P: \\{{ inventory_hostname }}\Public /persistent:no

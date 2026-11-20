@@ -1,0 +1,18 @@
+---
+# Signal that this host reached lab_stage (or failed before it). Hosts wait on
+# each other through these files on the controller: with strategy free every
+# host's tasks run in their own worker, so facts cannot carry the signal.
+- name: Signal {{ lab_stage }} ({{ lab_stage_state | default('ready') }})
+  ansible.builtin.copy:
+    dest: "{{ lab_run_dir }}/{{ inventory_hostname }}.{{ lab_stage }}"
+    content: "{{ lab_stage_state | default('ready') }}\n"
+    mode: "0600"
+    force: "{{ (lab_stage_state | default('ready')) == 'ready' }}"
+  changed_when: false   # bookkeeping, not a change to the lab
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+    ansible_shell_type: sh
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tags: always

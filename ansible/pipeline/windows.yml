@@ -1,0 +1,138 @@
+---
+# One Windows host from first boot to fully configured. Hosts only wait for
+# what they depend on, so a member installs its prerequisites while its domain
+# controller promotes, and a child DC waits for its parent only.
+- name: Build {{ inventory_hostname }}
+  block:
+    # The bootstrap user data renames hosts during first boot; this catches
+    # hosts created before it did (members are renamed by the join).
+    - name: Set computer name
+      ansible.windows.win_hostname:
+        name: "{{ inventory_hostname }}"
+      register: lab_rename
+      when: lab_role != 'member'
+      tags: [base]
+
+    - name: Reboot to apply the computer name
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+        post_reboot_delay: 15
+      when: lab_rename.reboot_required | default(false)
+      tags: [base]
+
+    - name: Prepare modules that need no domain
+      ansible.builtin.include_role:
+        name: "{{ mod }}"
+        tasks_from: prepare
+        apply:
+          tags: [modules]
+      loop: "{{ lab_modules | select('in', lab_prepare_modules) | list }}"
+      loop_control:
+        loop_var: mod
+      tags: [modules]
+
+    # -- structural role --------------------------------------------------------
+    - name: Promote the forest root
+      ansible.builtin.include_role:
+        name: dc
+        apply:
+          tags: [base, dc]
+      when: lab_role == 'dc'
+      tags: [base, dc]
+
+    - name: Wait for the parent domain controller
+      ansible.builtin.include_tasks: wait.yml
+      vars:
+        lab_stage: dc_ready
+        lab_wait_hosts: ["{{ dc_hosts_by_domain[domain_name.split('.', 1)[1]] }}"]
+      when: lab_role == 'child_dc'
+      tags: always
+
+    - name: Promote the child domain
+      ansible.builtin.include_role:
+        name: domain_child
+        apply:
+          tags: [base, child_dc]
+      when: lab_role == 'child_dc'
+      tags: [base, child_dc]
+
+    - name: Signal the domain is ready
+      ansible.builtin.include_tasks: mark.yml
+      vars:
+        lab_stage: dc_ready
+      when: lab_role in ['dc', 'child_dc']
+      tags: always
+
+    - name: Wait for this host's domain controller
+      ansible.builtin.include_tasks: wait.yml
+      vars:
+        lab_stage: dc_ready
+        lab_wait_hosts: ["{{ domain_dc_host }}"]
+      when: lab_role == 'member'
+      tags: always
+
+    - name: Join the domain
+      ansible.builtin.include_role:
+        name: domain_member
+        apply:
+          tags: [base, member]
+      when: lab_role == 'member'
+      tags: [base, member]
+
+    - name: Signal the host is joined
+      ansible.builtin.include_tasks: mark.yml
+      vars:
+        lab_stage: joined
+      tags: always
+
+    # -- directory content first, so every other module can name it ---------------
+    - name: Populate the directory
+      ansible.builtin.include_tasks: modules.yml
+      vars:
+        lab_module_list: "{{ lab_modules | select('in', staged_modules) | list }}"
+      when: lab_role in ['dc', 'child_dc']
+      tags: always
+
+    - name: Signal the directory is populated
+      ansible.builtin.include_tasks: mark.yml
+      vars:
+        lab_stage: identity
+      tags: always
+
+    # Modules may reference any domain's accounts and any host's computer
+    # object, so they start once every directory is filled and every host joined.
+    - name: Wait for every domain to be populated
+      ansible.builtin.include_tasks: wait.yml
+      vars:
+        lab_stage: identity
+        lab_wait_hosts: "{{ all_dc_hosts }}"
+      tags: always
+
+    - name: Wait for every host to be joined
+      ansible.builtin.include_tasks: wait.yml
+      vars:
+        lab_stage: joined
+        lab_wait_hosts: "{{ groups['windows'] | default([]) }}"
+      tags: always
+
+    - name: Apply the modules
+      ansible.builtin.include_tasks: modules.yml
+      vars:
+        lab_module_list: "{{ lab_modules | reject('in', staged_modules) | list }}"
+      tags: always
+
+  rescue:
+    - name: Tell the hosts waiting on {{ inventory_hostname }} that it failed
+      ansible.builtin.include_tasks: mark.yml
+      vars:
+        lab_stage: "{{ stage }}"
+        lab_stage_state: failed
+      loop: [dc_ready, joined, identity]
+      loop_control:
+        loop_var: stage
+      tags: always
+
+    - name: Fail {{ inventory_hostname }}
+      ansible.builtin.fail:
+        msg: "{{ ansible_failed_task.name | default('a task') }} failed: {{ ansible_failed_result.msg | default('see above') }}"
+      tags: always

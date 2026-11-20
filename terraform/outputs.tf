@@ -79,16 +79,18 @@ output "elastic_private_ip" {
 
 output "vpn_public_ip" {
   description = "Public IP of the vpn host, or empty if the lab has none."
-  value       = length(local.vpn_keys) > 0 ? aws_instance.host[local.vpn_keys[0]].public_ip : ""
+  value       = length(aws_eip.vpn) > 0 ? aws_eip.vpn[0].public_ip : ""
 }
 
 output "hosts" {
   description = "Deployed hosts keyed by name, with addressing, role and applied modules."
   value = { for k, h in local.hosts : k => {
-    public_ip  = aws_instance.host[k].public_ip
+    public_ip  = contains(local.vpn_keys, k) ? aws_eip.vpn[0].public_ip : aws_instance.host[k].public_ip
     private_ip = aws_instance.host[k].private_ip
+    id         = aws_instance.host[k].id
     os         = h.os
-    role       = try(h.role, "standalone")
-    modules    = local.host_modules[k]
+    role       = h.role
+    domain     = h.domain
+    modules    = h.modules
   } }
 }

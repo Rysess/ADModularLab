@@ -1,91 +1,94 @@
 ---
-shares_dc_host: "{{ domain_dc_host }}"
+# Every key below may be written without its shares_ prefix in lab.yml:
+#   modules: { shares: { shares: {...}, loot: [...], bots: [...] } }
+# expand.py normalises them; see README.
 
+shares_dc_host: "{{ domain_dc_host }}"
 shares_root: 'C:\Shares'
 shares_netbios: "{{ domain_netbios }}"
-
+shares_bot_dir: 'C:\ProgramData\LabBots'
 shares_ad_retries: 5
 shares_ad_delay: 10
 
-# Only the groups the shares are ACL'd to; identity fills them.
-shares_ad_groups:
-  - Finance-Team
-  - IT-Admins
-  - Backup-Admins
-  - DevOps
+# name -> {read, write, full, abe, description, path}, or just the reader(s).
+# A trailing $ hides the share. Principals missing from AD are created as global
+# groups on the domain controller. write = Modify, full = Full Control.
+shares_shares:
+  Public:
+    description: Company-wide drop box
+    read: [Domain Users]
+    write: [Domain Users]
+  Finance:
+    read: [Finance-Team, Management]
+  HR:
+    read: [HR]
+    abe: true
+  IT:
+    description: IT tooling and scripts
+    read: [IT-Admins, Helpdesk]
+    write: [IT-Admins, Helpdesk]
+  DevOps:
+    read: [DevOps]
+  Backups$:
+    description: Backup staging
+    read: [Backup-Admins]
 
-shares_definitions:
-  - { name: Finance, grp: Finance-Team }
-  - { name: IT, grp: IT-Admins }
-  - { name: Backups, grp: Backup-Admins }
-  - { name: DevOps, grp: DevOps }
-  - { name: Public, grp: Domain Users }
+# Files that hold the REAL password of a lab account. kind is one of:
+#   script   PowerShell with a PSCredential        batch     net use ... /user:
+#   config   web.config connection string           env       .env file
+#   unattend unattend.xml (base64 "obfuscated")      note      a handover note
+#   gpp      Groups.xml with a cpassword, in SYSVOL (MS14-025; no share/file)
+#   file     your own {content}
+# The password is looked up from identity (or the lab defaults) unless given.
+shares_loot:
+  - { kind: gpp, user: svc_deploy }
+  - { kind: script, share: DevOps, file: pipelines/release.ps1, user: svc_sql }
+  - { kind: unattend, share: Backups$, file: images/unattend.xml, user: svc_backup }
 
-# Prune negatives and depth for share crawlers.
-shares_extra_dirs:
-  - 'Public\a\b\c\d'
-  - 'Public\node_modules'
-  - 'Public\.git\objects\ab'
+# Simulated users. Each runs as a domain account from a scheduled task:
+#   script  runs <share>\<file> as <user> every <every> minutes
+#   browse  opens every UNC path listed in <share>\<file> (NTLM to wherever it points)
+# Files a bot reads are written once and never overwritten, so a change you make
+# survives a re-run. The bot's account is granted read on its share.
+shares_bots:
+  - { kind: script, user: svc_backup, share: IT, file: scripts/maintenance.ps1, every: 5 }
+  - { kind: browse, user: svc_monitor, share: Public, file: monitoring/servers.txt, every: 2 }
 
-# Every credential below is fabricated.
-shares_files:
+# Realistic filler documents per share, so loot has to be looked for.
+shares_noise: 12
+
+# Synthetic secret-looking decoys (fake keys, tokens, dumps) for scanners.
+shares_decoys: true
+
+# default leaves Windows alone; disabled makes this host an NTLM relay target.
+shares_smb_signing: default
+
+# Decoys: everything below is fabricated. The first path segment is the share's
+# directory; a decoy whose share is not defined is skipped.
+shares_decoy_files:
   - dest: 'Finance\Passwords_2025.xlsx'
     content: "fake xlsx - keep-filename-contains-yellow\n"
-  - dest: 'Finance\Handover_Notes.docx'
-    content: "fake docx - handover\n"
   - dest: 'Finance\DA_credentials.txt'
     content: "password = Sup3rS3cret!\n"
   - dest: 'Finance\payroll.bak'
     content: "backup blob - red ext\n"
-  - dest: 'Finance\reporting.sql'
-    content: "-- Server=tcp:sqlprod,1433;Initial Catalog=Payroll;User ID=sa;Password=Autumn2025!;\n"
-
   - dest: 'IT\id_rsa'
     content: "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKELABKEYDATA000\n-----END OPENSSH PRIVATE KEY-----\n"
-  - dest: 'IT\web.config'
-    content: >-
-      <configuration><connectionStrings><add
-      connectionString="Server=db;Password=W1nter2025!;"/></connectionStrings></configuration>
   - dest: 'IT\.env'
     content: "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-  - dest: 'IT\.npmrc'
-    content: "//registry.npmjs.org/:_authToken=npm_0123456789abcdefghijABCDEFGHIJ012345\n"
-  - dest: 'IT\gpp.xml'
-    content: "cpassword=\"RGVmaW5pdGVseUZha2VMYWJPbmx5MDAw\"\n"
   - dest: 'IT\backup.kdbx'
     content: "fake keepass - black ext\n"
-  - dest: 'IT\known_hosts'
-    content: "ssh-ed25519 AAAA labhost\n"
-
   - dest: 'Backups\ntds.dit'
     content: "fake esent - black name\n"
   - dest: 'Backups\SYSTEM'
     content: "fake hive - black name\n"
-  - dest: 'Backups\.git-credentials'
-    content: "https://u:ghp_0123456789abcdefghijABCDEFGHIJ012345@github.com\n"
-  - dest: 'Backups\vm-disk.vmdk'
-    content: "fake vmdk - red ext\n"
   - dest: 'Backups\terraform.tfstate'
     content: "{ \"admin_password\": \"L4bAdm1nP@ss\" }\n"
-  - dest: 'Backups\terraform.tfstate.backup'
-    content: "{ \"note\": \"ends-red\" }\n"
-
   - dest: 'DevOps\kubeconfig'
     content: "apiVersion: v1\nusers: [{user: {token: red-name}}]\n"
-  - dest: 'DevOps\.pypirc'
-    content: "[pypi]\npassword = pypi-AgEIcHlwaS01234567890123456789012345678901234567890\n"
   - dest: 'DevOps\docker-compose.yml'
     content: "services:\n  app:\n    environment:\n      - SLACK=xoxb-01234567890123456789\n      - GITLAB=glpat-0123456789abcdefghij\n"
-  - dest: 'DevOps\deploy.ps1'
-    content: "$gh='ghp_0123456789abcdefghijABCDEFGHIJ012345'\n$az='DefaultEndpointsProtocol=https;AccountKey=AAAAAAAAAAAAAAAA=='\n"
-  - dest: 'DevOps\main.tf'
-    content: "provider \"aws\" { access_key = \"AKIAIOSFODNN7EXAMPLE\" }\n"
-
-  - dest: 'Public\readme.txt'
-    content: "nothing here\n"
   - dest: 'Public\node_modules\leaked.env'
     content: "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
-  - dest: 'Public\.git\objects\ab\deadbeef'
-    content: "-----BEGIN RSA PRIVATE KEY-----\nFAKE\n-----END RSA PRIVATE KEY-----\n"
   - dest: 'Public\a\b\c\d\deep_secret.txt'
     content: "token=ghp_0123456789abcdefghijABCDEFGHIJ012345\n"

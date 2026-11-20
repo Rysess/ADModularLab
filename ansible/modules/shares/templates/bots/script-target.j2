@@ -1,0 +1,7 @@
+# Housekeeping job. Runs every {{ bot.every }} minutes as {{ bot.user }} from a
+# scheduled task on {{ inventory_hostname }}. Do not rename this file.
+$log = Join-Path $env:TEMP 'maintenance.log'
+Get-ChildItem -Path $env:TEMP -Filter *.tmp -ErrorAction SilentlyContinue |
+    Where-Object LastWriteTime -lt (Get-Date).AddDays(-7) |
+    Remove-Item -ErrorAction SilentlyContinue
+"$(Get-Date -Format s) maintenance ran as $env:USERDOMAIN\$env:USERNAME" | Out-File -Append -FilePath $log

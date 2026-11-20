@@ -1,16 +1,15 @@
-variable "lab_file" {
-  description = "Path to the lab definition YAML, relative to the terraform directory (single source of truth)."
+variable "config_file" {
+  description = "Canonical lab definition written by ./lab (labs/<name>/.lab/resolved.json)."
   type        = string
-  default     = "../lab.yml"
+}
 
-  validation {
-    condition     = can(regex("\\.ya?ml$", var.lab_file))
-    error_message = "lab_file must point at a .yml or .yaml file."
-  }
+variable "out_dir" {
+  description = "The lab's workspace (labs/<name>); every generated file lands under it."
+  type        = string
 }
 
 variable "operator_cidrs" {
-  description = "CIDRs allowed to reach management ports (WinRM, RDP, SSH, Kibana). Empty = detect this machine's public IP."
+  description = "CIDRs allowed to reach management ports. Empty = lab.allow_from, else this machine's public IP."
   type        = list(string)
   default     = []
 
@@ -25,8 +24,9 @@ variable "operator_cidrs" {
   }
 }
 
-variable "deploy_stamp" {
-  description = "Set by run.sh to the current epoch so each deploy resets the expiry lease to now + expires_hours. Empty keeps the existing lease (raw terraform apply)."
-  type        = string
-  default     = ""
+variable "known_admin_passwords" {
+  description = "Administrator passwords of hosts restored from a lab snapshot AMI (EC2 publishes none for them). Written by ./lab to a var-file."
+  type        = map(string)
+  default     = {}
+  sensitive   = true
 }

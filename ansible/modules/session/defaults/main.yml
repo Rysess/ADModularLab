@@ -1,0 +1,16 @@
+---
+# One entry: the domain user to log on at this host's console via Winlogon
+# autologon, seeding a live interactive session that shows up as a logged-on
+# user (Task Manager Users tab, quser), holds a Kerberos TGT, and leaves the
+# account's secrets in LSASS for credential-theft tooling. Windows has a single
+# console, so the module seeds one interactive session per host.
+#
+#   session_users:
+#     - user: alice            # sAMAccountName (required)
+#       password: Summer2025!  # defaults to the lab user password
+#       domain: lab.local      # defaults to this host's domain
+session_users: []
+
+# Poll after the reboot for the console logon and its TGT to appear.
+session_wait_retries: 18
+session_wait_delay: 10

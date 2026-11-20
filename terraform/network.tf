@@ -7,29 +7,36 @@ resource "aws_vpc" "lab" {
   cidr_block           = local.vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags                 = merge(local.lab_tags, { Name = "${local.lab.name}-vpc" })
+  tags                 = { Name = "${local.lab.name}-vpc" }
 }
 
 resource "aws_subnet" "lab" {
   vpc_id                  = aws_vpc.lab.id
   cidr_block              = local.subnet_cidr
   map_public_ip_on_launch = true
-  availability_zone       = data.aws_availability_zones.available.names[0]
-  tags                    = merge(local.lab_tags, { Name = "${local.lab.name}-subnet" })
+  # Chosen once by ./lab from AWS spot placement scores; '' = first zone.
+  availability_zone = (try(local.lab.availability_zone, "") != ""
+    ? local.lab.availability_zone
+  : data.aws_availability_zones.available.names[0])
+  tags = { Name = "${local.lab.name}-subnet" }
 }
 
 resource "aws_internet_gateway" "lab" {
   vpc_id = aws_vpc.lab.id
-  tags   = merge(local.lab_tags, { Name = "${local.lab.name}-igw" })
+  tags   = { Name = "${local.lab.name}-igw" }
 }
 
+# Routes are separate resources, never inline: a route table with inline routes
+# owns its whole route list and deletes the VPN return route on the next apply.
 resource "aws_route_table" "lab" {
   vpc_id = aws_vpc.lab.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.lab.id
-  }
-  tags = merge(local.lab_tags, { Name = "${local.lab.name}-rt" })
+  tags   = { Name = "${local.lab.name}-rt" }
+}
+
+resource "aws_route" "internet" {
+  route_table_id         = aws_route_table.lab.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.lab.id
 }
 
 resource "aws_route_table_association" "lab" {

@@ -1,4 +1,9 @@
 ---
+# Every key below may be written without its identity_ prefix in lab.yml:
+#   modules: { identity: { generate: 50, weak_passwords: 5 } }
+# expand.py turns them into the explicit identity_users / identity_groups /
+# identity_ous the tasks apply. See README.
+
 identity_domain: "{{ domain_name }}"
 identity_domain_dn: "DC={{ identity_domain.split('.') | join(',DC=') }}"
 
@@ -8,22 +13,99 @@ identity_ad_delay: 10
 # 'always' re-applies an edited password; on_create leaves it.
 identity_update_password: on_create
 
-# key = sAMAccountName; value = display name or a mapping. Membership is set
-# only via identity_groups. See README.
+# true deletes users and groups this module created that lab.yml no longer
+# declares, and removes undeclared members from them. Never touches built-ins.
+identity_prune: false
+
+# -- generated organisation ------------------------------------------------------
+# Realistic staff: names, departments, titles, managers, offices, phone numbers,
+# one OU per department and one group per department. 0 turns it off.
+# Either a count, or {count, seed}; the seed defaults to the lab and domain name.
+identity_generate: 30
+identity_company: ""            # default: "<Domain> Corp"
+identity_ou_root: Corp
+
+# Separate Domain Admin accounts (adm.<user>) for the first N IT staff.
+identity_admin_accounts: 1
+
+# Generated staff given a password from identity_weak_password_list (spraying).
+identity_weak_passwords: 3
+identity_weak_password_list:
+  - Summer2025!
+  - Winter2025!
+  - Welcome1!
+  - Password1!
+  - Company2025!
+
+# Generated staff whose description holds their (temporary) password.
+identity_password_in_description: 1
+
+# Service accounts, created in <root>/Service Accounts. Each gets its own strong
+# password unless one is given. {domain} in an SPN is this domain.
+identity_service_accounts:
+  svc_backup:
+    display: Backup Service
+    description: Nightly backup agent
+    groups: [Backup-Admins, Backup Operators]
+  svc_sql:
+    display: SQL Service
+    description: SQL Server engine
+    spn: "MSSQLSvc/sql01.{domain}:1433"
+  svc_deploy:
+    display: Deployment Service
+    description: Software deployment
+    groups: [DevOps]
+  svc_monitor:
+    display: Monitoring Service
+    description: Checks that file servers answer
+
+# -- explicit directory ----------------------------------------------------------
+# key = sAMAccountName; value = display name, or a mapping of display,
+# description, firstname, surname, email, password, enabled, ou, groups, spn,
+# asrep, sensitive, department, title, company, office, phone, manager.
 identity_users: {}
 
-# name -> member list, or a mapping (members, scope, category, ou).
+# name -> member list, or a mapping (members, description, scope, category, ou).
+# Generated staff are added to their department's group on top of these.
 identity_groups:
-  Auditors: [LabUser10]
-  Finance-Team: [LabUser1, Auditors]
-  IT-Admins: [LabUser2, Auditors]
-  Backup-Admins: [LabUser3, Auditors]
-  DevOps: [LabUser4, Auditors]
-  Server-Admins: [LabUser9, Auditors]
-  Management: [LabUser5]
-  HR: [LabUser6]
-  Helpdesk: [LabUser7]
-  Security-Team: [LabUser8]
+  Auditors:
+    ou: Corp/Groups
+    members: [LabUser10]
+  Finance-Team:
+    ou: Corp/Groups
+    members: [LabUser1, Auditors]
+  IT-Admins:
+    ou: Corp/Groups
+    members: [LabUser2, Auditors]
+  Backup-Admins:
+    ou: Corp/Groups
+    members: [LabUser3, Auditors]
+  DevOps:
+    ou: Corp/Groups
+    members: [LabUser4, Auditors]
+  Server-Admins:
+    ou: Corp/Groups
+    members: [LabUser9, Auditors]
+  Management:
+    ou: Corp/Groups
+    members: [LabUser5]
+  HR:
+    ou: Corp/Groups
+    members: [LabUser6]
+  Helpdesk:
+    ou: Corp/Groups
+    members: [LabUser7]
+  Security-Team:
+    ou: Corp/Groups
+    members: [LabUser8]
 
 # Only OUs nothing else references; a user/group 'ou' creates its path.
 identity_ous: []
+
+# -- domain-wide settings (untouched unless set) ----------------------------------
+# Default domain password policy, e.g. {min_length: 7, complexity: true,
+# lockout_threshold: 0, lockout_minutes: 30, max_age_days: 0, history: 0}.
+identity_password_policy: {}
+
+# ms-DS-MachineAccountQuota (Windows default 10; 0 blocks the RBCD/noPac staples).
+identity_machine_account_quota: null

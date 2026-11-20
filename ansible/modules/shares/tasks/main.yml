@@ -1,90 +1,179 @@
 ---
-- name: Fail early when no domain controller is in the inventory
+- name: Fail early when this domain has no controller in the inventory
   ansible.builtin.assert:
-    that: groups['role_dc'] | default([]) | length > 0
+    that: shares_dc_host | length > 0
     fail_msg: >-
-      The shares module creates AD groups on the domain controller, but no host
-      with role=dc is in the inventory. Check lab.yml.
+      The shares module resolves its principals on the domain controller, but no
+      controller for {{ domain_name | default('this host') }} is running.
     quiet: true
 
-- name: Create AD security groups (on the DC)
-  microsoft.ad.group:
-    name: "{{ item }}"
-    scope: global
-    category: security
-    state: present
-  loop: "{{ shares_ad_groups }}"
+# -- accounts ---------------------------------------------------------------------
+- name: Resolve the passwords leaked by loot and used by bots
+  ansible.builtin.set_fact:
+    shares_secrets: >-
+      {{ shares_secrets | default({}) | combine({
+           item.domain ~ '/' ~ item.user:
+             item.password | default(item.user | lab_password(
+               hostvars[dc_hosts_by_domain[item.domain]].identity_users | default({})
+                 if item.domain in dc_hosts_by_domain else {},
+               lab_user_password, domain_admin_user, domain_admin_pw), true)
+         }) }}
+  loop: "{{ (shares_loot | selectattr('user') | list) + shares_bots }}"
+  loop_control:
+    label: "{{ item.domain }}\\{{ item.user }}"
+  no_log: true
+
+# Principals named on a share but absent from AD become global groups, so a share
+# can be declared for a team before anyone is in it.
+- name: Create the groups the shares name but AD lacks (on the DC)
+  ansible.windows.win_powershell:
+    parameters:
+      Names: "{{ shares_principals }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyCollection()][string[]]$Names)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      $wellKnown = 'Everyone', 'Authenticated Users', 'Administrators', 'SYSTEM', 'Users'
+      foreach ($n in $Names) {
+          if ($n -match '\\' -or $wellKnown -contains $n) { continue }
+          if (Get-ADObject -LDAPFilter "(sAMAccountName=$n)") { continue }
+          New-ADGroup -Name $n -SamAccountName $n -GroupScope Global -GroupCategory Security
+          "created group $n"
+          $Ansible.Changed = $true
+      }
+  vars:
+    shares_principals: >-
+      {{ shares_shares | map(attribute='read') | flatten
+         | union(shares_shares | map(attribute='write') | flatten)
+         | union(shares_shares | map(attribute='full') | flatten) | unique }}
   delegate_to: "{{ shares_dc_host }}"
   register: shares_groups
   until: shares_groups is succeeded
   retries: "{{ shares_ad_retries }}"
   delay: "{{ shares_ad_delay }}"
 
-- name: Create share root dirs
-  ansible.windows.win_file:
-    path: "{{ shares_root }}\\{{ item.name }}"
-    state: directory
-  loop: "{{ shares_definitions }}"
+# -- shares -----------------------------------------------------------------------
+- name: Create the shares with their NTFS and SMB permissions
+  ansible.windows.win_powershell:
+    parameters:
+      Root: "{{ shares_root }}"
+      NetBios: "{{ shares_netbios }}"
+      Shares: "{{ shares_shares }}"
+    script: "{{ lookup('ansible.builtin.file', 'shares.ps1') }}"
+  register: shares_created
+  until: shares_created is succeeded
+  retries: "{{ shares_ad_retries }}"
+  delay: "{{ shares_ad_delay }}"
+
+- name: Report share changes
+  ansible.builtin.debug:
+    var: shares_created.output
+  when: shares_created.output | length > 0
+
+# -- content ----------------------------------------------------------------------
+- name: Render the loot
+  ansible.builtin.set_fact:
+    shares_files: >-
+      {{ shares_files | default([]) + [{
+           'path': shares_root ~ lab_bs ~ (shares_shares | selectattr('name', 'equalto', loot.share)
+                                         | first).dir ~ lab_bs ~ loot.file,
+           'content': lookup('ansible.builtin.template', 'loot/' ~ loot.kind ~ '.j2'),
+           'overwrite': true}] }}
+  vars:
+    loot_password: "{{ shares_secrets.get(loot.domain ~ '/' ~ loot.user, '') }}"
+    loot_netbios: "{{ loot.domain.split('.')[0] | upper }}"
+  loop: "{{ shares_loot | rejectattr('kind', 'equalto', 'gpp') | list }}"
   loop_control:
-    label: "{{ item.name }}"
+    loop_var: loot
+    label: "{{ loot.share }}\\{{ loot.file }}"
+  no_log: true
 
-- name: Create extra dirs (prune-negatives + depth test)
-  ansible.windows.win_file:
-    path: "{{ shares_root }}\\{{ item }}"
-    state: directory
-  loop: "{{ shares_extra_dirs }}"
+- name: Add the bot-facing files (written once, never overwritten)
+  ansible.builtin.set_fact:
+    shares_files: >-
+      {{ shares_files | default([]) + [{
+           'path': shares_root ~ lab_bs ~ (shares_shares | selectattr('name', 'equalto', bot.share)
+                                         | first).dir ~ lab_bs ~ bot.file,
+           'content': lookup('ansible.builtin.template', 'bots/' ~ bot.kind ~ '-target.j2'),
+           'overwrite': false}] }}
+  loop: "{{ shares_bots }}"
+  loop_control:
+    loop_var: bot
+    label: "{{ bot.share }}\\{{ bot.file }}"
 
-- name: Write synthetic artifacts
-  ansible.windows.win_copy:
-    dest: "{{ shares_root }}\\{{ item.dest }}"
-    content: "{{ item.content }}"
-  loop: "{{ shares_files }}"
+- name: Add the decoys
+  ansible.builtin.set_fact:
+    shares_files: >-
+      {{ shares_files | default([]) + [{'path': shares_root ~ lab_bs ~ item.dest,
+                                         'content': item.content, 'overwrite': true}] }}
+  loop: "{{ shares_decoy_files if shares_decoys | bool else [] }}"
   loop_control:
     label: "{{ item.dest }}"
+  when: item.dest.split(lab_bs)[0] in (shares_shares | map(attribute='dir') | list)
 
-- name: Ensure Administrators + SYSTEM keep Full Control (pre-lockdown)
-  ansible.windows.win_acl:
-    path: "{{ shares_root }}\\{{ item.0.name }}"
-    user: "{{ item.1 }}"
-    rights: "FullControl"
-    type: allow
-    state: present
-    inherit: "ContainerInherit, ObjectInherit"
-    propagation: "None"
-  loop: "{{ shares_definitions | product(['BUILTIN\\Administrators', 'NT AUTHORITY\\SYSTEM']) | list }}"
-  loop_control:
-    label: "{{ item.0.name }} <- {{ item.1 }}"
+- name: Write the files and the filler documents
+  ansible.windows.win_powershell:
+    parameters:
+      Files: "{{ shares_files | default([]) }}"
+      Root: "{{ shares_root }}"
+      Dirs: "{{ shares_shares | map(attribute='dir') | list }}"
+      Noise: "{{ shares_noise | int }}"
+    script: "{{ lookup('ansible.builtin.file', 'files.ps1') }}"
+  no_log: true
+  register: shares_written
 
-- name: Disable NTFS inheritance and drop inherited ACEs
-  ansible.windows.win_acl_inheritance:
-    path: "{{ shares_root }}\\{{ item.name }}"
-    state: absent
-    reorganize: false
-  loop: "{{ shares_definitions }}"
-  loop_control:
-    label: "{{ item.name }}"
+- name: Report written files
+  ansible.builtin.debug:
+    msg: "{{ shares_written.output | default([]) }}"
+  when: shares_written.output | default([]) | length > 0
 
-- name: Grant ONLY the mapped AD group ReadAndExecute (NTFS)
-  ansible.windows.win_acl:
-    path: "{{ shares_root }}\\{{ item.name }}"
-    user: "{{ shares_netbios }}\\{{ item.grp }}"
-    rights: "ReadAndExecute"
-    type: allow
-    state: present
-    inherit: "ContainerInherit, ObjectInherit"
-    propagation: "None"
-  loop: "{{ shares_definitions }}"
+# Group Policy Preferences password (MS14-025): a Groups.xml with a cpassword in
+# SYSVOL, encrypted with the AES key Microsoft published.
+- name: Plant Group Policy Preferences passwords in SYSVOL (on the DC)
+  ansible.windows.win_powershell:
+    parameters:
+      Account: "{{ loot_netbios }}\\{{ loot.user }}"
+      Password: "{{ shares_secrets[loot.domain ~ '/' ~ loot.user] }}"
+      Guid: "{{ ('adlab-gpp-' ~ loot.domain ~ '-' ~ loot.user) | to_uuid | upper }}"
+    script: "{{ lookup('ansible.builtin.file', 'gpp.ps1') }}"
+  vars:
+    loot_netbios: "{{ loot.domain.split('.')[0] | upper }}"
+  loop: "{{ shares_loot | selectattr('kind', 'equalto', 'gpp') | list }}"
   loop_control:
-    label: "{{ item.name }} <- {{ item.grp }}"
+    loop_var: loot
+    label: "{{ loot.user }}"
+  delegate_to: "{{ dc_hosts_by_domain[loot.domain] }}"
+  no_log: true
 
-- name: Publish shares (read = mapped group only)
-  ansible.windows.win_share:
-    name: "{{ item.name }}"
-    path: "{{ shares_root }}\\{{ item.name }}"
-    state: present
-    full: "BUILTIN\\Administrators"
-    read: "{{ shares_netbios }}\\{{ item.grp }}"
-    list: true
-  loop: "{{ shares_definitions }}"
+# -- SMB signing -------------------------------------------------------------------
+- name: Set SMB signing
+  ansible.windows.win_powershell:
+    parameters:
+      Required: "{{ shares_smb_signing == 'required' }}"
+    script: |
+      [CmdletBinding()]
+      param([bool]$Required)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      $c = Get-SmbServerConfiguration
+      if ($c.RequireSecuritySignature -ne $Required) {
+          Set-SmbServerConfiguration -RequireSecuritySignature $Required -Confirm:$false
+          $Ansible.Changed = $true
+      }
+      # Off means off: also stop offering it, so clients do not negotiate it.
+      if (-not $Required -and $c.EnableSecuritySignature) {
+          Set-SmbServerConfiguration -EnableSecuritySignature $false -Confirm:$false
+          $Ansible.Changed = $true
+      }
+  when: shares_smb_signing != 'default'
+
+# -- bots --------------------------------------------------------------------------
+- name: Run the bots
+  ansible.builtin.include_tasks: bot.yml
+  loop: "{{ shares_bots }}"
   loop_control:
-    label: "{{ item.name }} <- {{ item.grp }}"
+    loop_var: bot
+    label: "{{ bot.name }}"

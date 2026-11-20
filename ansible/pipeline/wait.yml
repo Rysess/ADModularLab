@@ -1,0 +1,28 @@
+---
+# Wait until every host in lab_wait_hosts (that is part of this run) reached
+# lab_stage; fail at once if one of them failed instead.
+- name: Wait for {{ lab_stage }} of {{ lab_waiting | join(', ') or 'nobody' }}
+  ansible.builtin.wait_for:
+    path: "{{ lab_run_dir }}/{{ item }}.{{ lab_stage }}"
+    search_regex: "ready|failed"
+    timeout: "{{ lab_wait_timeout }}"
+  loop: "{{ lab_waiting }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_connection: local
+    ansible_shell_type: sh
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+    lab_waiting: >-
+      {{ lab_wait_hosts | select('in', ansible_play_hosts_all)
+         | reject('equalto', inventory_hostname) | list }}
+  tags: always
+
+- name: Stop if one of them failed
+  ansible.builtin.assert:
+    that: lookup('ansible.builtin.file', lab_run_dir ~ '/' ~ item ~ '.' ~ lab_stage) is search('ready')
+    fail_msg: "{{ item }} failed before {{ lab_stage }}; its error is above"
+    quiet: true
+  loop: "{{ lab_wait_hosts | select('in', ansible_play_hosts_all)
+            | reject('equalto', inventory_hostname) | list }}"
+  tags: always

@@ -1,0 +1,22 @@
+---
+# Runs during the base phase, while the domain controller is still promoting:
+# the download and install are the slowest part of the module and need no domain.
+- name: Install SQL Server Express and the client tools (early)
+  chocolatey.chocolatey.win_chocolatey:
+    name: "{{ sql_server_packages }}"
+    state: present
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  vars:
+    ansible_become_flags: logon_type=batch
+  register: sql_prepare
+  until: sql_prepare is succeeded
+  retries: 2
+  delay: 30
+
+- name: Reboot if the installer asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: sql_prepare.reboot_required | default(false)

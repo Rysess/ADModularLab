@@ -23,3 +23,16 @@ child_dc_user: svc_childdc
 
 # Applied to controllers before other modules, which name what these create.
 staged_modules: [identity]
+
+# A single backslash. In Ansible, '\\' inside a Jinja expression renders as two
+# backslashes, so expressions that build Windows paths or DOMAIN\user use this.
+lab_bs: '\'
+
+# Barrier markers for the build pipeline (cleared by ./lab before each run).
+lab_run_dir: "{{ lab_dir }}/.lab/run"
+lab_wait_timeout: 2700
+
+# Modules shipping tasks/prepare.yml: run early, before the domain exists.
+lab_prepare_modules: >-
+  {{ query('ansible.builtin.fileglob', playbook_dir ~ '/modules/*/tasks/prepare.yml')
+     | map('dirname') | map('dirname') | map('basename') | list }}

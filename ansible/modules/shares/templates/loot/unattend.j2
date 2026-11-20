@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS">
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Domain>{{ loot_netbios }}</Domain>
+        <Username>{{ loot.user }}</Username>
+        <Password>
+          <Value>{{ (loot_password ~ 'Password') | b64encode(encoding='utf-16-le') }}</Value>
+          <PlainText>false</PlainText>
+        </Password>
+      </AutoLogon>
+    </component>
+  </settings>
+</unattend>

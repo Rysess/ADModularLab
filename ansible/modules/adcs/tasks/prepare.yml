@@ -1,0 +1,15 @@
+---
+# Base phase: install the roles while the domain is still being built.
+- name: Install the Certification Authority roles (early)
+  ansible.windows.win_feature:
+    name: "{{ ['ADCS-Cert-Authority', 'RSAT-ADCS-Mgmt']
+              + (['ADCS-Web-Enrollment'] if adcs_esc8 | bool else []) }}"
+    include_management_tools: true
+    state: present
+  register: adcs_prepare
+
+- name: Reboot if the role install asked for one
+  ansible.windows.win_reboot:
+    reboot_timeout: 900
+    post_reboot_delay: 15
+  when: adcs_prepare.reboot_required

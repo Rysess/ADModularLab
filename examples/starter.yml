@@ -1,0 +1,31 @@
+# A domain controller with a generated organisation, a file server, and a VPN.
+# About $0.13/hour.
+#
+#   ./lab new mylab            # copies this file to labs/mylab/lab.yml
+#   ./lab up mylab
+#
+# Everything not written here is inferred: dc01 and srv01 are Windows because of
+# their roles, srv01 joins lab.local because it is the only forest, sizes come
+# from what each host runs, and lab.vpn adds a small Linux VPN host.
+
+lab:
+  domain: lab.local
+  admin: john.john            # the lab's domain admin (password in ./lab creds)
+  expires: 24h                # ./lab expire <lab> 48h pushes it back later
+  vpn: true
+
+hosts:
+  dc01:
+    role: dc
+    ip: 10                    # 10.<lab>.1.10, wherever the lab's network lands
+    modules:
+      identity:               # ~30 staff, service accounts, a few weak passwords
+      gmsa:
+
+  srv01:
+    role: member
+    modules:
+      shares:                 # shares, real loot, and two bots acting as users
+      logon:
+        rdp: [IT-Admins, Helpdesk]
+        deny_rdp: [Finance-Team]

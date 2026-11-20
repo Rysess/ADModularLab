@@ -1,27 +1,14 @@
----
 # The smallest useful Active Directory lab: one domain controller and nothing
-# else. About $0.07/hour.
+# else. About $0.05/hour.
 #
-#   LAB_FILE=examples/minimal.yml ./run.sh
+#   ./lab new mini --from minimal && ./lab up mini
 #
-# Access is over WinRM and RDP from the deploying machine's public IP. Add the
-# vpn host from vpn-only.yml to reach the lab over a VPN instead.
+# Access is over WinRM and RDP from the deploying machine's public IP. Add
+# `vpn: true` under lab to reach it over a VPN instead.
 
 lab:
-  name: minimal-lab
-  region: eu-west-3
-  domain_admin: john.john
-  expires_hours: 24
-
-defaults:
-  windows_instance_type: t3.medium
-  linux_instance_type: t3.nano
-  windows_disk_gb: 50
-  linux_disk_gb: 8
+  expires: 8h
 
 hosts:
-  - name: dc01
-    os: windows
-    role: dc
-    domain: lab.local
-    private_ip: 10.0.1.10
+  dc01:
+    role: dc                  # lab.local, admin lab.admin, t3.medium

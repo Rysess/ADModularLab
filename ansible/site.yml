@@ -1,102 +1,29 @@
 ---
-- name: Wait for hosts to accept connections
+# The whole lab in one play. strategy: free lets every host move through its
+# own pipeline (pipeline/windows.yml, pipeline/linux.yml) at its own pace;
+# hosts only wait for each other at explicit barriers (pipeline/wait.yml).
+#
+# ./lab clears the barrier markers (labs/<lab>/.lab/run) before every run.
+- name: Build the lab
   hosts: all
   gather_facts: false
   strategy: free
-  tags: always
+  vars:
+    lab_modules: "{{ modules | default([], true) }}"
+    lab_role: "{{ group_names | select('match', '^role_') | map('regex_replace', '^role_', '')
+                  | first | default('standalone') }}"
   tasks:
-    - name: Wait for connection
+    - name: Wait for the host to accept connections
       ansible.builtin.wait_for_connection:
         timeout: 900
+      tags: always
 
-# Members are renamed on join; DCs up front (a promoted DC cannot be renamed).
-- name: Set Windows computer names
-  hosts: windows:!role_member
-  gather_facts: false
-  strategy: free
-  tags: [base, prepare, dc]
-  tasks:
-    - name: Set computer name
-      ansible.windows.win_hostname:
-        name: "{{ inventory_hostname }}"
-      register: rename
+    - name: Build a Windows host
+      ansible.builtin.include_tasks: pipeline/windows.yml
+      when: "'windows' in group_names"
+      tags: always
 
-    - name: Reboot to apply the computer name
-      ansible.windows.win_reboot:
-        reboot_timeout: 900
-        post_reboot_delay: 15
-      when: rename.reboot_required
-
-- name: Promote domain controllers
-  hosts: role_dc
-  gather_facts: false
-  tags: [base, dc]
-  roles:
-    - dc
-
-- name: Promote child domain controllers
-  hosts: role_child_dc
-  gather_facts: false
-  tags: [base, child_dc]
-  roles:
-    - domain_child
-
-- name: Join domain members
-  hosts: role_member
-  gather_facts: false
-  strategy: free
-  tags: [base, member]
-  roles:
-    - domain_member
-
-# identity runs in its own play (a barrier) so later modules see its principals.
-- name: Apply directory modules
-  hosts: role_dc:role_child_dc
-  gather_facts: false
-  tags: [modules]
-  tasks:
-    - name: Include staged module role
-      ansible.builtin.include_role:
-        name: "{{ mod }}"
-        apply:
-          tags: [modules]
-      loop: "{{ modules | default([], true) | select('in', staged_modules) | list }}"
-      loop_control:
-        loop_var: mod
-        label: "{{ mod }}"
-      tags: [modules]
-
-- name: Apply modules (Linux)
-  hosts: linux
-  gather_facts: true
-  become: true
-  strategy: free
-  tags: [modules]
-  tasks:
-    - name: Include module role
-      ansible.builtin.include_role:
-        name: "{{ mod }}"
-        apply:
-          tags: [modules]
-      loop: "{{ modules | default([], true) | reject('in', staged_modules) | list }}"
-      loop_control:
-        loop_var: mod
-        label: "{{ mod }}"
-      tags: [modules]
-
-- name: Apply modules (Windows)
-  hosts: windows
-  gather_facts: false
-  strategy: free
-  tags: [modules]
-  tasks:
-    - name: Include module role
-      ansible.builtin.include_role:
-        name: "{{ mod }}"
-        apply:
-          tags: [modules]
-      loop: "{{ modules | default([], true) | reject('in', staged_modules) | list }}"
-      loop_control:
-        loop_var: mod
-        label: "{{ mod }}"
-      tags: [modules]
+    - name: Build a Linux host
+      ansible.builtin.include_tasks: pipeline/linux.yml
+      when: "'linux' in group_names"
+      tags: always

@@ -6,12 +6,11 @@ resource "tls_private_key" "lab_key" {
 resource "aws_key_pair" "lab_key" {
   key_name   = "${local.lab.name}-key"
   public_key = tls_private_key.lab_key.public_key_openssh
-  tags       = local.lab_tags
 }
 
 resource "local_file" "private_key" {
   content         = tls_private_key.lab_key.private_key_pem
-  filename        = "${path.module}/lab-key.pem"
+  filename        = "${var.out_dir}/lab-key.pem"
   file_permission = "0600"
 }
 

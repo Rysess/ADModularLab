@@ -1,0 +1,137 @@
+---
+# Windows only. Seeds a live INTERACTIVE console logon for a domain user via
+# Winlogon autologon, so the account shows as a logged-on user (Task Manager
+# Users tab, quser) with a full LSASS credential set and a Kerberos TGT - a
+# realistic "someone is signed in here" target for credential-theft tooling.
+# One console session per host; runs on a domain-joined host.
+
+- name: Resolve the session user
+  ansible.builtin.set_fact:
+    session_user: "{{ session_users[0].user }}"
+    session_domain: "{{ session_users[0].domain | default(domain_name) }}"
+  no_log: true
+
+# An identity account's own password, the lab admin's, or the LabUser default.
+- name: Resolve the session password
+  ansible.builtin.set_fact:
+    session_password: >-
+      {{ session_users[0].password | default(session_user | lab_password(
+           hostvars[dc_hosts_by_domain[session_domain]].identity_users | default({})
+             if session_domain in dc_hosts_by_domain else {},
+           lab_user_password, domain_admin_user, domain_admin_pw), true) }}
+  no_log: true
+
+- name: Derive the NetBIOS domain
+  ansible.builtin.set_fact:
+    session_netbios: "{{ session_domain.split('.')[0] | upper }}"
+
+# On a DC the Default Domain Controllers policy limits "Allow log on locally"
+# to admin groups; grant it so a non-admin user can hold the console too.
+# Additive, so existing holders are kept. (A background GPO refresh can reclaim
+# it on a DC after ~90 min; a session already established keeps its TGT.)
+- name: Grant the user the interactive logon right
+  ansible.windows.win_user_right:
+    name: SeInteractiveLogonRight
+    users: ["{{ session_netbios }}\\{{ session_user }}"]
+    action: add
+
+# Winlogon autologon: at every boot the console logs this account on - a real
+# interactive (type 2) logon that caches the account's secrets and gets a TGT.
+# DefaultPassword is cleartext in the registry (deliberately - it is itself a
+# lab artifact), so the whole task is no_log.
+- name: Configure autologon for the session user
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+    name: "{{ item.name }}"
+    data: "{{ item.data }}"
+    type: string
+    state: present
+  loop:
+    - { name: AutoAdminLogon, data: "1" }
+    - { name: ForceAutoLogon, data: "1" }
+    - { name: DefaultDomainName, data: "{{ session_netbios }}" }
+    - { name: DefaultUserName, data: "{{ session_user }}" }
+    - { name: DefaultPassword, data: "{{ session_password }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  register: session_autologon
+
+# A stale AutoLogonCount would make Winlogon stop auto-logging-on after N boots.
+- name: Remove AutoLogonCount so autologon never expires
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+    name: AutoLogonCount
+    state: absent
+
+- name: Check whether the user is already on the console
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      User: "{{ session_user }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$User)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+      $q = (& quser 2>&1 | Out-String)
+      if ($q -match [regex]::Escape($User)) { 'FOUND' } else { 'ABSENT' }
+  register: session_pre
+  changed_when: false
+  failed_when: false
+
+# Reboot to trigger the console logon - only when autologon was (re)written or
+# the user is not already on the console, so re-runs are a no-op.
+- name: Reboot to bring up the console session
+  ansible.windows.win_reboot:
+    reboot_timeout: 1200
+    post_reboot_delay: 20
+  when: session_autologon is changed or 'FOUND' not in (session_pre.output | default([]))
+
+- name: Confirm the user holds an interactive session with a TGT
+  ansible.windows.win_powershell:
+    error_action: continue
+    parameters:
+      User: "{{ session_user }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$User)
+      Set-StrictMode -Version Latest
+      $Ansible.Changed = $false
+
+      # quser: is the account on a WTS session (what Task Manager Users shows)?
+      $q = (& quser 2>&1 | Out-String)
+      $onSession = $q -match [regex]::Escape($User)
+
+      # Map its logon session (same CIM classes sessions.yml uses) and read the
+      # ticket cache as SYSTEM.
+      $acctById = @{}
+      foreach ($link in Get-CimInstance Win32_LoggedOnUser) {
+          $a = $link.Antecedent
+          $acctById[$link.Dependent.LogonId] = if ($a.Domain) { "$($a.Domain)\$($a.Name)" } else { $a.Name }
+      }
+      $luids = $acctById.GetEnumerator() |
+          Where-Object { ($_.Value -split '\\')[-1].ToLower() -eq $User.ToLower() } |
+          ForEach-Object { $_.Key } | Select-Object -Unique
+      $hasTgt = $false
+      foreach ($luid in $luids) {
+          $hex = '0x{0:x}' -f [int64]$luid
+          if ((& klist -li $hex 2>&1 | Out-String) -match 'krbtgt/') { $hasTgt = $true }
+      }
+
+      Write-Output ("console session : {0}" -f $(if ($onSession) {'present'} else {'ABSENT'}))
+      Write-Output ("TGT cached      : {0}" -f $(if ($hasTgt) {'present'} else {'ABSENT'}))
+      Write-Output "--- quser ---"
+      Write-Output $q.Trim()
+      if (-not ($onSession -and $hasTgt)) { $Ansible.Failed = $true }
+  become: true
+  become_method: ansible.builtin.runas
+  become_user: SYSTEM
+  register: session_verify
+  until: session_verify is succeeded
+  retries: "{{ session_wait_retries }}"
+  delay: "{{ session_wait_delay }}"
+
+- name: Report the seeded session
+  ansible.builtin.debug:
+    var: session_verify.output

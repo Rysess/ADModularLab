@@ -1,32 +1,14 @@
-#!/usr/bin/env python3
-"""Validate a lab definition against the roles and modules it references.
+"""Validate a canonical lab definition against the roles and modules it uses.
 
-Run by ./run.sh before Terraform touches anything. Everything checked here is
-something Terraform or Ansible would otherwise only discover 20 minutes into a
-deployment.
+Runs before Terraform touches anything: everything checked here is something
+Terraform or Ansible would otherwise only discover twenty minutes in. Input is
+the output of labctl.config.normalize(), so every inference has been made.
 """
 import ipaddress
-import os
 import re
-import sys
 
-import yaml
+from .config import MEM, ROLE_DIR, known_module, meta
 
-MEM = {
-    "t3.nano": 0.5, "t3.micro": 1, "t3.small": 2, "t3.medium": 4,
-    "t3.large": 8, "t3.xlarge": 16, "t3.2xlarge": 32,
-    "t3a.nano": 0.5, "t3a.micro": 1, "t3a.small": 2, "t3a.medium": 4,
-    "t3a.large": 8, "t3a.xlarge": 16, "t3a.2xlarge": 32,
-    "t2.nano": 0.5, "t2.micro": 1, "t2.small": 2, "t2.medium": 4,
-    "t2.large": 8, "t2.xlarge": 16,
-    "m5.large": 8, "m5.xlarge": 16, "m5.2xlarge": 32,
-    "m6i.large": 8, "m6i.xlarge": 16, "m6i.2xlarge": 32,
-    "m6a.large": 8, "m6a.xlarge": 16, "m6a.2xlarge": 32,
-    "c5.large": 4, "c5.xlarge": 8, "c6i.large": 4, "c6i.xlarge": 8,
-    "r5.large": 16, "r6i.large": 16,
-}
-ROLE_DIR = {"dc": "dc", "member": "domain_member",
-            "child_dc": "domain_child", "standalone": None}
 VALID_OS = {"windows", "linux"}
 VALID_PROTO = {"tcp", "udp"}
 VPN_CLIENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -38,18 +20,15 @@ WINDOWS_VERSIONS = {"2016", "2019", "2022", "2025"}
 WINDOWS_EDITIONS = {"full", "core"}
 GROUP_SCOPES = {"global", "domainlocal", "universal"}
 GROUP_CATEGORIES = {"security", "distribution"}
-IDENTITY_USER_KEYS = {"display", "description", "firstname", "surname",
-                      "email", "password", "enabled", "ou"}
+IDENTITY_USER_KEYS = {"display", "description", "firstname", "surname", "email",
+                      "password", "enabled", "ou", "spn", "asrep", "sensitive",
+                      "department", "title", "company", "office", "phone", "manager"}
 IDENTITY_GROUP_KEYS = {"description", "scope", "category", "members", "ou"}
+PASSWORD_POLICY_KEYS = {"min_length", "complexity", "lockout_threshold",
+                        "lockout_minutes", "max_age_days", "min_age_days", "history",
+                        "reversible"}
 LOGON_LISTS = ("logon_admins", "logon_rdp", "logon_interactive", "logon_batch",
                "logon_deny_interactive", "logon_deny_rdp", "logon_deny_network")
-
-# Adding members to these via identity_groups would try to re-cast their scope.
-DOMAINLOCAL_BUILTINS = {
-    "administrators", "users", "guests", "remote desktop users",
-    "backup operators", "server operators", "account operators",
-    "print operators", "remote management users", "cert publishers",
-}
 
 # Denying these network logon locks Ansible (WinRM, as local Administrator) out.
 LOCKOUT_PRINCIPALS = {
@@ -77,43 +56,12 @@ WELL_KNOWN = {n.lower() for n in (
     "LOCAL SERVICE", "INTERACTIVE", "NETWORK", "BATCH", "SERVICE",
 )}
 
-SUBNET = ipaddress.ip_network("10.0.1.0/24")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,14}$")
 LAB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 DOMAIN_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?"
                        r"(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$")
 REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
 AMI_RE = re.compile(r"^ami-[0-9a-f]{8,17}$")
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.join(HERE, "..")
-ROLE_DIRS = [os.path.join(ROOT, "ansible", "roles"),
-             os.path.join(ROOT, "ansible", "modules")]
-
-
-def meta(name):
-    """Load a role or module's lab_meta.yml, or {} if it declares none."""
-    for d in ROLE_DIRS:
-        p = os.path.join(d, name, "lab_meta.yml")
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8") as fh:
-                return yaml.safe_load(fh) or {}
-    return {}
-
-
-def known(name):
-    return any(os.path.isdir(os.path.join(d, name)) for d in ROLE_DIRS)
-
-
-def defaults_of(name):
-    """A module's defaults/main.yml, or {} if it has none."""
-    for d in ROLE_DIRS:
-        p = os.path.join(d, name, "defaults", "main.yml")
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8") as fh:
-                return yaml.safe_load(fh) or {}
-    return {}
-
 
 def module_names(host, problems):
     """A modules entry is either a bare name or {name: <n>, vars: {...}}."""
@@ -198,12 +146,6 @@ def check_identity_vars(where, mv, problems, warns):
             problems.append(f"{where}: identity_groups {who!r} category {cat!r} must be "
                             f"one of {sorted(GROUP_CATEGORIES)}")
 
-    for who in (mv.get("identity_groups") or {}):
-        if str(who).lower() in DOMAINLOCAL_BUILTINS:
-            warns.append(f"{where}: identity_groups {who!r} is a built-in domain-local "
-                         f"group; adding members here tries to change its scope. Add the "
-                         f"member through the user's 'groups' instead")
-
     for who, spec in (mv.get("identity_groups") or {}).items():
         members = spec.get("members", []) if isinstance(spec, dict) else spec
         if not isinstance(members, list):
@@ -242,6 +184,9 @@ def check_identity_vars(where, mv, problems, warns):
         members = spec.get("members", []) if isinstance(spec, dict) else spec
         refs += [(f"identity_groups {who!r} member", m) for m in members
                  if isinstance(m, str)]
+    for who, spec in (mv.get("identity_users") or {}).items():
+        if isinstance(spec, dict) and spec.get("manager"):
+            refs.append((f"identity_users {who!r} manager", spec["manager"]))
     for label, ref in refs:
         if ref.lower() in defined or re.match(r"^LabUser\d+$", ref):
             continue
@@ -249,12 +194,41 @@ def check_identity_vars(where, mv, problems, warns):
                      f"members are resolved by sAMAccountName (the map key), not display "
                      f"name")
 
+    policy = mv.get("identity_password_policy") or {}
+    if not isinstance(policy, dict):
+        problems.append(f"{where}: password_policy must be a mapping")
+    else:
+        extra = set(policy) - PASSWORD_POLICY_KEYS
+        if extra:
+            problems.append(f"{where}: password_policy has unknown keys {sorted(extra)}; "
+                            f"expected {sorted(PASSWORD_POLICY_KEYS)}")
+        ml = policy.get("min_length")
+        if ml is not None and (not isinstance(ml, int) or not 0 <= ml <= 14):
+            problems.append(f"{where}: password_policy min_length must be 0-14")
+        lt = policy.get("lockout_threshold")
+        if isinstance(lt, int) and 0 < lt < 5:
+            warns.append(f"{where}: lockout_threshold {lt} locks accounts after very few "
+                         f"failures; password spraying will lock the lab out")
+        weak = [u for u, sp in (mv.get("identity_users") or {}).items()
+                if isinstance(sp, dict) and isinstance(sp.get("password"), str)
+                and "{{" not in sp["password"]
+                and ml is not None and len(sp["password"]) < ml]
+        if weak:
+            problems.append(f"{where}: passwords of {sorted(weak)[:5]} are shorter than "
+                            f"password_policy min_length {ml}; AD would refuse them")
 
-def declared_principals(hosts):
+    maq = mv.get("identity_machine_account_quota")
+    if maq is not None and (not isinstance(maq, int) or maq < 0):
+        problems.append(f"{where}: machine_account_quota must be a non-negative integer")
+
+
+def declared_principals(hosts, lab=None):
     """Names this lab file creates, for spotting a logon list that misspells one."""
     names = set(WELL_KNOWN)
-    default_groups = {g.lower() for g in defaults_of("identity")
-                      .get("identity_groups", {})}
+    # The dc role always creates the domain admin and LabUser1..N.
+    admin = str((lab or {}).get("domain_admin", "")).strip().lower()
+    if admin:
+        names.add(admin)
     for h in hosts:
         names.add(str(h.get("name", "")).lower())
         mvars = module_vars(h)
@@ -265,9 +239,11 @@ def declared_principals(hosts):
             mv = mvars.get("identity", {})
             for key in ("identity_users", "identity_groups"):
                 names |= {w.lower() for w in (mv.get(key) or {}) if isinstance(w, str)}
-            # No explicit groups means the module's default org chart applies.
-            if "identity_groups" not in mv:
-                names |= default_groups
+        # shares creates every group its shares name.
+        for s in (mvars.get("shares", {}).get("shares_shares") or []):
+            if isinstance(s, dict):
+                for key in ("read", "write", "full"):
+                    names |= {str(x).lower() for x in s.get(key) or []}
     return names
 
 
@@ -350,6 +326,48 @@ def check_acl_vars(where, mv, declared, problems, warns):
                                  f"this lab creates; it must already exist")
 
 
+def check_session_vars(where, mv, declared, problems, warns):
+    users = mv.get("session_users")
+    if not users:
+        problems.append(f"{where}: name the account to log on, e.g. "
+                        f"session: {{user: alice}}")
+        return
+    if not isinstance(users, list):
+        problems.append(f"{where}: session_users must be a list")
+        return
+    if len(users) > 1:
+        problems.append(f"{where}: session_users seeds one interactive console session "
+                        f"per host (Windows has a single console), so list exactly one "
+                        f"user; put further sessions on other hosts")
+    seen = set()
+    for entry in users:
+        if not isinstance(entry, dict):
+            problems.append(f"{where}: session_users entry {entry!r} must be a mapping "
+                            f"with at least a 'user' key")
+            continue
+        extra = set(entry) - {"user", "password", "domain"}
+        if extra:
+            problems.append(f"{where}: session_users entry {entry!r} has unknown keys "
+                            f"{sorted(extra)}; expected 'user', 'password', 'domain'")
+        user = entry.get("user")
+        if not isinstance(user, str) or not user.strip():
+            problems.append(f"{where}: session_users entry {entry!r} needs a non-empty 'user'")
+            continue
+        for key in ("password", "domain"):
+            if key in entry and (not isinstance(entry[key], str) or not entry[key].strip()):
+                problems.append(f"{where}: session_users {user!r} {key!r} must be a "
+                                f"non-empty string")
+        if user.lower() in seen:
+            problems.append(f"{where}: session_users lists {user!r} twice")
+        seen.add(user.lower())
+        # A user from another domain won't be in `declared`; only flag a
+        # same-domain user this lab file plainly does not create.
+        if "domain" not in entry and user.lower() not in declared \
+                and not re.match(r"^LabUser\d+$", user):
+            warns.append(f"{where}: session_users user {user!r} matches no user this lab "
+                         f"file creates; it must already exist or the logon will fail")
+
+
 def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
     where = f"{host.get('name')}: module {mod!r}"
     if mod == "identity":
@@ -360,6 +378,20 @@ def check_module_vars(host, mod, mv, lab_modules, declared, problems, warns):
         check_vpn_vars(where, mv, problems)
     elif mod == "acl":
         check_acl_vars(where, mv, declared, problems, warns)
+    elif mod == "session":
+        check_session_vars(where, mv, declared, problems, warns)
+    elif mod == "shares":
+        check_shares_vars(where, mv, declared, warns)
+
+
+def check_shares_vars(where, mv, declared, warns):
+    for s in mv.get("shares_shares") or []:
+        for key in ("read", "write", "full"):
+            for p in s.get(key) or []:
+                if "\\" in p or p.lower() in declared or re.match(r"^LabUser\d+$", p):
+                    continue
+                warns.append(f"{where}: share {s['name']!r} {key} {p!r} is not created "
+                             f"by this lab; it will be created as an empty group")
 
 
 def module_vars(host):
@@ -396,6 +428,9 @@ def check_lab(lab, problems):
         problems.append(f"lab.expires_action {action!r} must be one of "
                         f"{sorted(VALID_EXPIRES_ACTION)}")
 
+    if not isinstance(lab.get("spot", True), bool):
+        problems.append("lab.spot must be true or false")
+
     enabled = lab.get("expires_enabled", True)
     if not isinstance(enabled, bool):
         problems.append(f"lab.expires_enabled {enabled!r} must be true or false")
@@ -431,7 +466,7 @@ def check_expose_ports(host, problems):
                             f"{sorted(VALID_PROTO)}")
 
 
-def check_private_ip(host, seen_ips, problems):
+def check_private_ip(host, seen_ips, subnet, problems):
     name = host.get("name")
     ip = host.get("private_ip")
     if not ip:
@@ -441,9 +476,9 @@ def check_private_ip(host, seen_ips, problems):
     except ValueError:
         problems.append(f"{name}: private_ip {ip!r} is not a valid address")
         return
-    if addr not in SUBNET:
-        problems.append(f"{name}: private_ip {ip} is outside {SUBNET}")
-    elif int(addr) - int(SUBNET.network_address) < 4 or addr == SUBNET.broadcast_address:
+    if addr not in subnet:
+        problems.append(f"{name}: private_ip {ip} is outside {subnet}")
+    elif int(addr) - int(subnet.network_address) < 4 or addr == subnet.broadcast_address:
         problems.append(f"{name}: private_ip {ip} is reserved by AWS")
     if ip in seen_ips:
         problems.append(f"{name}: private_ip {ip} already used by {seen_ips[ip]}")
@@ -539,19 +574,16 @@ def check_requirements(host, role, roles, itype, lab_roles, lab_modules, problem
                 problems.append(f"{name}: role '{r}' needs >= {mint}, host is {itype}")
 
 
-def main():
-    lab_file = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "lab.yml")
-    with open(lab_file, encoding="utf-8") as fh:
-        cfg = yaml.safe_load(fh) or {}
-
-    lab = cfg.get("lab") or {}
-    defaults = cfg.get("defaults") or {}
-    hosts = cfg.get("hosts") or []
+def run(cfg):
+    """(problems, warnings) for a canonical lab."""
+    lab = cfg["lab"]
+    defaults = cfg["defaults"]
+    hosts = cfg["hosts"]
+    subnet = ipaddress.ip_network(cfg["network"]["subnet_cidr"])
     problems, warns = [], []
 
     if not hosts:
-        print("Preflight FAILED:\n  - no hosts declared")
-        sys.exit(1)
+        return ["no hosts declared"], []
 
     check_lab(lab, problems)
     check_defaults(defaults, problems)
@@ -563,7 +595,7 @@ def main():
     for h in hosts:
         host_modules[id(h)] = module_names(h, problems)
     lab_modules = {m for mods in host_modules.values() for m in mods}
-    declared = declared_principals(hosts)
+    declared = declared_principals(hosts, lab)
 
     for h in hosts:
         name = h.get("name", "")
@@ -617,11 +649,14 @@ def main():
                 problems.append(f"{name}: domain {dom!r}: the first label becomes the "
                                 f"NetBIOS name and must be 15 characters or fewer")
 
+        if not isinstance(h.get("spot", True), bool):
+            problems.append(f"{name}: spot must be true or false")
+
         disk = h.get("disk_gb")
         if disk is not None and (not isinstance(disk, int) or disk < 8):
             problems.append(f"{name}: disk_gb {disk!r} must be an integer of at least 8")
 
-        check_private_ip(h, seen_ips, problems)
+        check_private_ip(h, seen_ips, subnet, problems)
         check_expose_ports(h, problems)
 
         for mod, mv in module_vars(h).items():
@@ -632,18 +667,13 @@ def main():
         if dupes:
             problems.append(f"{name}: module(s) {sorted(dupes)} listed more than once")
 
-        # EC2 drops forwarded traffic unless the source/dest check is off.
-        if "vpn" in mods and h.get("source_dest_check", True):
-            problems.append(f"{name}: runs the vpn module, so it needs "
-                            f"source_dest_check: false")
-
         itype = h.get("instance_type") or defaults.get(f"{host_os}_instance_type")
         roles = []
         rd = ROLE_DIR.get(role)
         if rd:
             roles.append(rd)
         for m in mods:
-            if not known(m):
+            if not known_module(m):
                 problems.append(f"{name}: unknown module {m!r}")
             else:
                 roles.append(m)
@@ -651,16 +681,6 @@ def main():
         check_requirements(h, role, roles, itype, lab_roles, lab_modules, problems, warns,
                            host_edition(h, defaults))
 
-    for w in warns:
-        print(f"[warn] {w}")
-    if problems:
-        print("\nPreflight FAILED:")
-        for p in problems:
-            print(f"  - {p}")
-        print("\nFix the lab file, or bypass with:  ./run.sh --force   (or SKIP_PREFLIGHT=1)")
-        sys.exit(1)
-    print("[preflight] OK - every host satisfies its roles' requirements")
-
-
-if __name__ == "__main__":
-    main()
+    if len([h for h in hosts if "vpn" in module_names(h, [])]) > 1:
+        problems.append("only one host per lab may run the vpn module")
+    return problems, warns
