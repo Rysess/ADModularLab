@@ -1,0 +1,39 @@
+---
+# Run by ./lab before Terraform destroys hosts that were removed from lab.yml:
+# deletes their computer accounts and DNS records, so the domain does not keep
+# stale objects (and the name can be reused by a later host).
+#   -e '{"removed_hosts": [{"name": "ws01", "domain": "lab.local"}]}'
+- name: Remove departing hosts from their domain
+  hosts: role_dc:role_child_dc
+  gather_facts: false
+  vars:
+    removed_hosts: []
+  tasks:
+    - name: Delete computer objects and DNS records
+      ansible.windows.win_powershell:
+        parameters:
+          Names: "{{ removed_hosts | selectattr('domain', 'equalto', domain_name)
+                     | map(attribute='name') | list }}"
+          Zone: "{{ domain_name }}"
+        script: |
+          [CmdletBinding()]
+          param([AllowEmptyCollection()][string[]]$Names, [Parameter(Mandatory)][string]$Zone)
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          Import-Module ActiveDirectory
+          $Ansible.Changed = $false
+          foreach ($n in $Names) {
+              $c = Get-ADComputer -LDAPFilter "(sAMAccountName=$n`$)"
+              if ($c) {
+                  Remove-ADObject -Identity $c -Recursive -Confirm:$false
+                  "removed computer $n"
+                  $Ansible.Changed = $true
+              }
+              $r = Get-DnsServerResourceRecord -ZoneName $Zone -Name $n -ErrorAction SilentlyContinue
+              if ($r) {
+                  $r | Remove-DnsServerResourceRecord -ZoneName $Zone -Force
+                  "removed DNS records for $n.$Zone"
+                  $Ansible.Changed = $true
+              }
+          }
+      when: removed_hosts | selectattr('domain', 'equalto', domain_name) | list | length > 0

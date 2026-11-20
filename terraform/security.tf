@@ -21,12 +21,17 @@ resource "aws_security_group" "windows" {
     protocol    = "tcp"
     cidr_blocks = local.operator_cidrs
   }
-  ingress {
-    description = "RDP"
-    from_port   = 3389
-    to_port     = 3389
-    protocol    = "tcp"
-    cidr_blocks = local.operator_cidrs
+  # With a VPN in the lab, RDP goes through the tunnel and is not exposed.
+  # (ports: [3389] on a host still opens it explicitly.)
+  dynamic "ingress" {
+    for_each = length(local.vpn_keys) == 0 ? [1] : []
+    content {
+      description = "RDP"
+      from_port   = 3389
+      to_port     = 3389
+      protocol    = "tcp"
+      cidr_blocks = local.operator_cidrs
+    }
   }
   egress {
     description = "Outbound"
@@ -36,7 +41,7 @@ resource "aws_security_group" "windows" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.lab_tags, { Name = "${local.lab.name}-windows-sg" })
+  tags = { Name = "${local.lab.name}-windows-sg" }
 }
 
 resource "aws_security_group" "linux" {
@@ -80,7 +85,7 @@ resource "aws_security_group" "linux" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.lab_tags, { Name = "${local.lab.name}-linux-sg" })
+  tags = { Name = "${local.lab.name}-linux-sg" }
 }
 
 resource "aws_security_group" "host_expose" {
@@ -107,5 +112,5 @@ resource "aws_security_group" "host_expose" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.lab_tags, { Name = "${local.lab.name}-${each.key}-expose" })
+  tags = { Name = "${local.lab.name}-${each.key}-expose" }
 }

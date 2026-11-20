@@ -1,0 +1,14 @@
+# Release pipeline - pushes the build to the application servers.
+# TODO: move this credential to the vault before go-live (ticket OPS-412)
+$ErrorActionPreference = 'Stop'
+$user = '{{ loot_netbios }}\{{ loot.user }}'
+$pass = ConvertTo-SecureString '{{ loot_password }}' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential($user, $pass)
+
+$targets = @('{{ inventory_hostname }}')
+foreach ($t in $targets) {
+    Invoke-Command -ComputerName $t -Credential $cred -ScriptBlock {
+        Copy-Item -Path '\\{{ inventory_hostname }}\{{ loot.share }}\builds\latest\*' -Destination 'C:\App' -Recurse -Force
+        Restart-Service -Name 'LabApp' -ErrorAction SilentlyContinue
+    }
+}

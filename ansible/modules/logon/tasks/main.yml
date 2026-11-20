@@ -13,7 +13,7 @@
   ansible.windows.win_user_right:
     name: "{{ item.name }}"
     users: >-
-      {{ (item.users + (['BUILTIN\\Administrators']
+      {{ (item.users + (['BUILTIN' ~ lab_bs ~ 'Administrators']
                         if item.keep and logon_keep_administrators else []))
          | unique }}
     action: set

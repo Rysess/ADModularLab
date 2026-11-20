@@ -1,0 +1,12 @@
+---
+# Linux hosts (VPN, Elastic) need nothing from Active Directory: they are
+# configured from the first minute, alongside the Windows build.
+- name: Gather facts
+  ansible.builtin.setup:
+  tags: always
+
+- name: Apply the modules
+  ansible.builtin.include_tasks: modules.yml
+  vars:
+    lab_module_list: "{{ lab_modules }}"
+  tags: always

@@ -26,14 +26,15 @@ def expired_instances(ec2, now):
                 try:
                     when = dt.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
                 except ValueError:
-                    continue
+                    continue      # "never"
                 if when <= now:
-                    yield instance["InstanceId"]
+                    yield instance
 
 
 def handler(event, context):
     ec2 = boto3.client("ec2")
-    ids = sorted(set(expired_instances(ec2, dt.datetime.now(dt.timezone.utc))))
+    found = list(expired_instances(ec2, dt.datetime.now(dt.timezone.utc)))
+    ids = sorted({i["InstanceId"] for i in found})
 
     if not ids:
         print(f"{LAB}: nothing expired")
@@ -41,7 +42,19 @@ def handler(event, context):
 
     print(f"{LAB}: {ACTION} {ids}")
     if ACTION == "terminate":
+        # A persistent spot request relaunches a terminated instance: cancel first.
+        spot = sorted({i["SpotInstanceRequestId"] for i in found if i.get("SpotInstanceRequestId")})
+        if spot:
+            ec2.cancel_spot_instance_requests(SpotInstanceRequestIds=spot)
         ec2.terminate_instances(InstanceIds=ids)
+        # An Elastic IP outlives its instance and keeps billing; release it.
+        for addr in ec2.describe_addresses(Filters=[{"Name": "tag:Lab", "Values": [LAB]}])["Addresses"]:
+            try:
+                if addr.get("AssociationId"):
+                    ec2.disassociate_address(AssociationId=addr["AssociationId"])
+                ec2.release_address(AllocationId=addr["AllocationId"])
+            except Exception as e:  # noqa: BLE001 - best effort, retried next hour
+                print(f"{LAB}: could not release {addr.get('PublicIp')}: {e}")
     else:
         ec2.stop_instances(InstanceIds=ids)
     return {"action": ACTION, "instances": ids}

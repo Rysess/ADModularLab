@@ -46,19 +46,16 @@ interactive sessions, so denying it to the account Ansible connects as (the
 local Administrator) leaves the host unreachable — preflight refuses that.
 `logon_keep_administrators` protects allow lists only, never deny lists.
 
-Together these express tiering:
+Together these express tiering (the `logon_` prefix is optional in `lab.yml`):
 
 ```yaml
-- name: srv-win01
-  role: member
-  domain: lab.local
+srv01:
   modules:
-    - name: logon
-      vars:
-        logon_admins: [Server-Admins]        # local Administrators (additive)
-        logon_rdp: [IT-Admins, Helpdesk]     # Remote Desktop Users (additive)
-        logon_interactive: [Server-Admins]   # replaces the right; drops Users
-        logon_deny_network: [Domain Admins]  # keep tier-0 off this tier-1 host
+    logon:
+      admins: [Server-Admins]        # local Administrators (additive)
+      rdp: [IT-Admins, Helpdesk]     # Remote Desktop Users (additive)
+      interactive: [Server-Admins]   # replaces the right; drops Users
+      deny_network: [Domain Admins]  # keep tier-0 off this tier-1 host
 ```
 
 RDP still needs a path to 3389: either `expose_ports` on the host or the `vpn`

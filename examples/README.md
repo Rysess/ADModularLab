@@ -1,69 +1,48 @@
-# Example lab definitions
+# Example labs
 
-Deploy any of these with `LAB_FILE=`:
+Templates for `./lab new <name> --from <example>`. Each one is copied to
+`labs/<name>/lab.yml`, which you then edit and deploy:
 
 ```
-LAB_FILE=examples/minimal.yml ./run.sh
+./lab new mini --from minimal
+./lab up mini
 ```
 
-The same variable applies to `./stop.sh`, `./start.sh`, `./snapshot.sh` and
-`./clean.sh`. Copy one to `lab.yml` to make it the default.
+| Example | What it shows | Hosts | Cost |
+| ------- | ------------- | ----- | ---- |
+| [`starter`](starter.yml) | The default: generated org, file server with loot and bots, VPN | 3 | $0.13/hr |
+| [`minimal`](minimal.yml) | One domain controller | 1 | $0.05/hr |
+| [`vpn-only`](vpn-only.yml) | Just the VPN path, several client profiles | 1 | $0.01/hr |
+| [`identity`](identity.yml) | `identity` and `logon`: users, groups, OUs, flags, policy, logon rights | 2 | $0.10/hr |
+| [`services`](services.yml) | `shares` (relay target), `sql_server`, `gmsa`, `defender` | 3 | $0.11/hr |
+| [`vulns`](vulns.yml) | Every `vulns` toggle | 2 | $0.10/hr |
+| [`adcs`](adcs.yml) | All four ESC scenarios | 2 | $0.10/hr |
+| [`trusts`](trusts.yml) | Two forests, a child domain, a forest trust, LAPS | 5 | $0.25/hr |
+| [`detection`](detection.yml) | Weak AD, Elastic stack, agents, VPN | 4 | $0.30/hr |
+| [`breach`](breach.yml) | Assumed breach with several paths to Domain Admin | 4 | $0.16/hr |
 
-Focused labs, each teaching one area:
-
-| File | Modules shown | Hosts | Cost |
-| ---- | ------------- | ----- | ---- |
-| [`minimal.yml`](minimal.yml) | none — a bare domain controller | 1 | $0.07/hr |
-| [`vpn-only.yml`](vpn-only.yml) | `vpn` (multiple client profiles) | 1 | $0.01/hr |
-| [`identity.yml`](identity.yml) | `identity`, `logon` — users, groups, OUs, logon rights | 2 | $0.11/hr |
-| [`services.yml`](services.yml) | `gmsa`, `shares`, `sql_server`, `defender` | 2 | $0.14/hr |
-| [`vulns.yml`](vulns.yml) | `vulns` — every AD misconfiguration toggle | 2 | $0.11/hr |
-| [`adcs.yml`](adcs.yml) | `adcs` — all four ESC scenarios | 2 | $0.14/hr |
-
-Larger labs that combine areas:
-
-| File | Contents | Hosts | Cost |
-| ---- | -------- | ----- | ---- |
-| [`trusts.yml`](trusts.yml) | Two forests, a child domain, a forest trust, members in two domains, `laps` | 5 | $0.31/hr |
-| [`detection.yml`](detection.yml) | DC, member, SQL, Elastic stack, agents, weak AD, VPN | 4 | $0.31/hr |
-| [`reference.yml`](reference.yml) | Every configuration key, annotated | 8 | $0.52/hr |
-
-`reference.yml` is documentation that happens to deploy. Read it to see the
-whole schema; do not run it because it is the biggest.
+Costs are `eu-west-3` on-demand, compute plus gp3, at the time of writing.
+`./lab stop` halts compute and keeps EBS. Each lab stops or terminates itself
+when `lab.expires` passes.
 
 ## Choosing
 
-- Checking AWS credentials and the VPN path: `vpn-only.yml`.
-- Learning the tooling against a domain: `minimal.yml`.
-- Users, groups and logon tiering: `identity.yml`.
-- File shares, SQL and gMSA: `services.yml`.
-- Practising AD attacks: `vulns.yml`.
-- Certificate services: `adcs.yml`.
-- Cross-domain and cross-forest work: `trusts.yml`.
-- Detection engineering: `detection.yml`, the only one with telemetry.
-
-## Cost
-
-`eu-west-3` on-demand, compute plus gp3, at the time of writing. `./stop.sh`
-halts compute and keeps EBS, leaving roughly $0.0001/GB/hr. Every resource is
-tagged `ExpiresAt` from `lab.expires_hours`; once it passes, a Lambda terminates
-the lab (or stops it, with `expires_action: stop`) so a forgotten lab cleans up
-on its own.
-
-## Domains
-
-Every `dc`, `child_dc` and `member` names its `domain`. A `child_dc` is a child
-of that domain minus the first label, so `child.lab.local` sits under
-`lab.local`. A second forest is another `dc` with another domain.
+- Checking AWS credentials and the VPN path: `vpn-only`.
+- Learning the tooling against a domain: `minimal`.
+- A realistic company to explore: `starter`.
+- Users, groups and logon tiering: `identity`.
+- Practising one class of AD attack: `vulns`, `adcs`.
+- Cross-domain and cross-forest work: `trusts`.
+- A full exercise end to end: `breach`.
+- Detection engineering: `detection`, the only one with telemetry.
 
 ## Writing your own
 
-Start from `minimal.yml` and add hosts. `reference.yml` lists every key with
-its default. `./run.sh` validates the file before Terraform runs and reports
-what is wrong rather than failing twenty minutes into a deployment:
+Start from `minimal` and add hosts. `./lab validate <lab>` shows what the file
+expands to, and reports problems before anything is deployed:
 
 ```
-srv1: joins 'nope.local', which no domain controller in the lab serves
+srv01: joins 'nope.local', which no controller serves. Known: ['lab.local']
 ca01: role 'adcs' needs >= t3.medium, host is t3.small
-vpn01: runs the vpn module, so it needs source_dest_check: false
+ws01: module 'session': @admin needs identity to generate at least 1 admin account(s)
 ```

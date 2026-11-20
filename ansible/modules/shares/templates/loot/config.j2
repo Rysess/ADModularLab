@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <connectionStrings>
+    <add name="Default"
+         connectionString="Server=sql01.{{ loot.domain }};Database=LabApp;User ID={{ loot_netbios }}\{{ loot.user }};Password={{ loot_password }};Integrated Security=false;"
+         providerName="System.Data.SqlClient" />
+  </connectionStrings>
+  <system.web>
+    <compilation debug="true" targetFramework="4.8" />
+    <identity impersonate="true" userName="{{ loot_netbios }}\{{ loot.user }}" password="{{ loot_password }}" />
+  </system.web>
+</configuration>

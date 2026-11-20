@@ -1,16 +1,15 @@
 # Terminates (or stops, with expires_action: stop) the lab when ExpiresAt passes.
 
 locals {
-  expires_enabled = try(local.lab.expires_enabled, true)
-  expires_action  = try(local.lab.expires_action, "terminate")
-  expiry_count    = local.expires_enabled ? 1 : 0
+  expires_action = local.lab.expires_action
+  expiry_count   = local.expires_enabled ? 1 : 0
 }
 
 data "archive_file" "expire" {
   count       = local.expiry_count
   type        = "zip"
   source_file = "${path.module}/lambda/expire.py"
-  output_path = "${path.module}/expire.zip"
+  output_path = "${var.out_dir}/.lab/expire.zip"
 }
 
 data "aws_iam_policy_document" "expire_assume" {
@@ -29,10 +28,20 @@ data "aws_iam_policy_document" "expire" {
     resources = ["arn:aws:logs:*:*:*"]
   }
 
-  # DescribeInstances cannot be tag-scoped.
+  # Describe and spot-request calls cannot be tag-scoped.
   statement {
-    actions   = ["ec2:DescribeInstances"]
+    actions   = ["ec2:DescribeInstances", "ec2:DescribeAddresses", "ec2:CancelSpotInstanceRequests"]
     resources = ["*"]
+  }
+
+  statement {
+    actions   = ["ec2:DisassociateAddress", "ec2:ReleaseAddress"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Lab"
+      values   = [local.lab.name]
+    }
   }
 
   statement {
@@ -50,7 +59,6 @@ resource "aws_iam_role" "expire" {
   count              = local.expiry_count
   name               = "${local.lab.name}-expire"
   assume_role_policy = data.aws_iam_policy_document.expire_assume.json
-  tags               = local.lab_tags
 }
 
 resource "aws_iam_role_policy" "expire" {
@@ -64,7 +72,6 @@ resource "aws_cloudwatch_log_group" "expire" {
   count             = local.expiry_count
   name              = "/aws/lambda/${local.lab.name}-expire"
   retention_in_days = 7
-  tags              = local.lab_tags
 }
 
 resource "aws_lambda_function" "expire" {
@@ -76,7 +83,6 @@ resource "aws_lambda_function" "expire" {
   handler          = "expire.handler"
   runtime          = "python3.12"
   timeout          = 60
-  tags             = local.lab_tags
 
   environment {
     variables = {
@@ -92,7 +98,6 @@ resource "aws_cloudwatch_event_rule" "expire" {
   count               = local.expiry_count
   name                = "${local.lab.name}-expire"
   schedule_expression = "rate(1 hour)"
-  tags                = local.lab_tags
 }
 
 resource "aws_cloudwatch_event_target" "expire" {

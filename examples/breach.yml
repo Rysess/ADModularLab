@@ -1,0 +1,53 @@
+# An assumed-breach scenario with several complete paths to Domain Admin, built
+# from identity + shares + session + acl. About $0.18/hour.
+#
+#   ./lab new breach --from breach && ./lab up breach
+#
+# Start from a LabUser (password in ./lab creds) on the VPN. The intended paths
+# are written to labs/<lab>/walkthrough.md; don't read it if you want to play.
+
+lab:
+  admin: john.john
+  expires: 24h
+  vpn: true
+
+hosts:
+  dc01:
+    role: dc
+    ip: 10
+    modules:
+      identity:
+        generate: 40
+        admin_accounts: 2
+        weak_passwords: 4
+        password_in_description: 2
+        password_policy: { lockout_threshold: 0 }
+      acl:
+        grants:
+          - { principal: Helpdesk, target: Server-Admins, right: GenericAll }
+
+  srv01:
+    ip: 20
+    modules:
+      shares:
+        smb_signing: disabled
+        loot:
+          - { kind: gpp, user: svc_deploy }
+          - { kind: script, share: DevOps, file: pipelines/release.ps1, user: svc_sql }
+          - { kind: batch, share: Public, file: scripts/map-drives.bat, user: svc_monitor }
+          - { kind: config, share: IT, file: apps/intranet/web.config, user: svc_deploy }
+      logon:
+        admins: [Server-Admins, svc_deploy]
+        rdp: [Helpdesk]
+
+  ws01:
+    ip: 30
+    type: t3.medium
+    modules:
+      logon:
+        admins: [Server-Admins]
+        rdp: [Domain Users]
+      session:
+        # The first Domain Admin identity generated, logged on at a box where
+        # Server-Admins are local admins: dump LSASS, become DA.
+        user: "@admin"

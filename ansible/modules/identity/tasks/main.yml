@@ -1,7 +1,8 @@
 ---
 # Runs on the controller for identity_domain; a child_dc populates its child.
+# identity_users / identity_groups arrive explicit from expand.py, but the short
+# forms are still accepted so the role also works when vars are set by hand.
 
-# Seeded so an empty users/groups map still leaves a list, not undefined.
 - name: Seed the normalised lists
   ansible.builtin.set_fact:
     identity_group_list: []
@@ -10,7 +11,7 @@
 - name: Normalise the declared groups
   ansible.builtin.set_fact:
     identity_group_list: >-
-      {{ identity_group_list | default([])
+      {{ identity_group_list
          + [spec | combine({'name': item.key, 'path': path,
                             'members': spec.members | default([], true)})] }}
   vars:
@@ -27,7 +28,7 @@
 
 - name: Normalise the declared users
   ansible.builtin.set_fact:
-    identity_user_list: "{{ identity_user_list | default([]) + [entry] }}"
+    identity_user_list: "{{ identity_user_list + [entry] }}"
   vars:
     spec: >-
       {{ item.value if item.value is mapping
@@ -42,6 +43,64 @@
   loop: "{{ identity_users | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+  no_log: true      # the entries carry resolved passwords
+
+- name: Apply the domain password policy
+  ansible.windows.win_powershell:
+    parameters:
+      Policy: "{{ identity_password_policy }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][hashtable]$Policy)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      $cur = Get-ADDefaultDomainPasswordPolicy
+      $want = @{}
+      $map = @{
+          min_length        = @('MinPasswordLength',          { param($v) [int]$v })
+          complexity        = @('ComplexityEnabled',          { param($v) [bool]$v })
+          lockout_threshold = @('LockoutThreshold',           { param($v) [int]$v })
+          lockout_minutes   = @('LockoutDuration',            { param($v) [timespan]::FromMinutes([int]$v) })
+          max_age_days      = @('MaxPasswordAge',             { param($v) [timespan]::FromDays([int]$v) })
+          min_age_days      = @('MinPasswordAge',             { param($v) [timespan]::FromDays([int]$v) })
+          history           = @('PasswordHistoryCount',       { param($v) [int]$v })
+          reversible        = @('ReversibleEncryptionEnabled', { param($v) [bool]$v })
+      }
+      foreach ($k in $Policy.Keys) {
+          if (-not $map.ContainsKey($k)) { throw "unknown password_policy key '$k'" }
+          $prop, $conv = $map[$k]
+          $v = & $conv $Policy[$k]
+          if ($cur.$prop -ne $v) { $want[$prop] = $v }
+      }
+      if ($want.ContainsKey('LockoutDuration')) { $want['LockoutObservationWindow'] = $want['LockoutDuration'] }
+      if ($want.Count) {
+          Set-ADDefaultDomainPasswordPolicy -Identity (Get-ADDomain) @want
+          $Ansible.Changed = $true
+          $want.Keys | ForEach-Object { "set $_" }
+      }
+  when: identity_password_policy | default({}, true) | length > 0
+
+- name: Set the machine account quota
+  ansible.windows.win_powershell:
+    parameters:
+      Quota: "{{ identity_machine_account_quota | int }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][int]$Quota)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      $d = Get-ADDomain
+      $cur = (Get-ADObject $d.DistinguishedName -Properties 'ms-DS-MachineAccountQuota').'ms-DS-MachineAccountQuota'
+      if ($cur -ne $Quota) {
+          Set-ADDomain -Identity $d -Replace @{ 'ms-DS-MachineAccountQuota' = $Quota }
+          $Ansible.Changed = $true
+          "ms-DS-MachineAccountQuota $cur -> $Quota"
+      }
+  when: identity_machine_account_quota is not none
 
 # Every level of every path, so 'ou: Tier0/Admins' needs no separate declaration.
 - name: Create organisational units
@@ -60,17 +119,11 @@
           $parent = $DomainDn
           foreach ($label in ($path -split '/' | Where-Object { $_ })) {
               $dn = "OU=$label,$parent"
-              try {
-                  if (-not (Get-ADOrganizationalUnit -LDAPFilter "(distinguishedName=$dn)")) {
-                      New-ADOrganizationalUnit -Name $label -Path $parent `
-                          -ProtectedFromAccidentalDeletion:$false
-                      Write-Output "created $dn"
-                      $Ansible.Changed = $true
-                  }
-              } catch {
-                  $Ansible.Failed = $true
-                  Write-Output "failed to create ${dn}: $($_.Exception.Message)"
-                  return
+              if (-not (Get-ADOrganizationalUnit -LDAPFilter "(distinguishedName=$dn)")) {
+                  New-ADOrganizationalUnit -Name $label -Path $parent `
+                      -ProtectedFromAccidentalDeletion:$false
+                  Write-Output "created $dn"
+                  $Ansible.Changed = $true
               }
               $parent = $dn
           }
@@ -104,7 +157,6 @@
   register: identity_existing_groups
   changed_when: false
 
-# Only absent groups are created, so a declared built-in keeps its scope.
 - name: Create groups
   microsoft.ad.group:
     name: "{{ item.name }}"
@@ -113,6 +165,9 @@
     scope: "{{ item.scope | default('global') }}"
     category: "{{ item.category | default('security') }}"
     path: "{{ item.path if item.path | default('') else omit }}"
+    attributes:
+      set:
+        adminDescription: adlab     # marks it as managed here (see prune)
     state: present
   loop: "{{ identity_group_list }}"
   loop_control:
@@ -123,37 +178,39 @@
   retries: "{{ identity_ad_retries }}"
   delay: "{{ identity_ad_delay }}"
 
-- name: Create users
-  microsoft.ad.user:
-    # identity = sAMAccountName: a display-name change renames, not orphans.
-    identity: "{{ item.name }}"
-    name: "{{ item.display }}"
-    sam_account_name: "{{ item.name }}"
-    upn: "{{ item.name }}@{{ identity_domain }}"
-    display_name: "{{ item.display }}"
-    description: "{{ item.description | default(omit) }}"
-    firstname: "{{ item.firstname | default(omit) }}"
-    surname: "{{ item.surname | default(omit) }}"
-    email: "{{ item.email | default(omit) }}"
-    password: "{{ item.password | default(lab_user_password) }}"
-    update_password: "{{ identity_update_password }}"
-    password_never_expires: true
-    enabled: "{{ item.enabled | default(true) }}"
-    path: "{{ item.path if item.path | default('') else omit }}"
-    state: present
-  loop: "{{ identity_user_list }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: identity_user_result
-  until: identity_user_result is succeeded
+# One PowerShell call for every user rather than one WinRM round trip each.
+# Passwords travel as a sensitive (SecureString) parameter: errors stay visible
+# in the output, secrets never do.
+- name: Create and update users
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'users.ps1') }}"
+    parameters:
+      Users: >-
+        {{ identity_user_list | map('dict2items')
+           | map('rejectattr', 'key', 'equalto', 'password') | map('items2dict') | list }}
+      Domain: "{{ identity_domain }}"
+      UpdatePassword: "{{ identity_update_password }}"
+    sensitive_parameters:
+      - name: Passwords
+        value: >-
+          {{ dict(identity_user_list | map(attribute='name')
+                  | zip(identity_user_list | map(attribute='password', default=lab_user_password)))
+             | to_json }}
+  register: identity_users_result
+  until: identity_users_result is succeeded
   retries: "{{ identity_ad_retries }}"
   delay: "{{ identity_ad_delay }}"
 
+- name: Report the users created or changed
+  ansible.builtin.debug:
+    var: identity_users_result.output
+  when: identity_users_result.output | length > 0
+
 - name: Populate group membership
   microsoft.ad.group:
-    # No scope: the group exists; passing one could re-cast a built-in.
-    name: "{{ item.name }}"
-    path: "{{ item.path if item.path | default('') else omit }}"
+    # identity (sAMAccountName), so built-ins in CN=Builtin are found in place
+    # rather than re-created under CN=Users.
+    identity: "{{ item.name }}"
     members:
       add: "{{ item.members }}"
     state: present
@@ -164,3 +221,68 @@
   until: identity_member_result is succeeded
   retries: "{{ identity_ad_retries }}"
   delay: "{{ identity_ad_delay }}"
+
+# Managers and the account-control bits microsoft.ad.user does not expose.
+- name: Apply managers, AS-REP and sensitive flags
+  ansible.windows.win_powershell:
+    parameters:
+      Users: "{{ identity_flag_users }}"
+    script: |
+      [CmdletBinding()]
+      param([AllowEmptyCollection()][object[]]$Users)
+      Set-StrictMode -Version Latest
+      $ErrorActionPreference = 'Stop'
+      Import-Module ActiveDirectory
+      $Ansible.Changed = $false
+      foreach ($u in $Users) {
+          $a = Get-ADUser -Identity $u.name -Properties Manager, DoesNotRequirePreAuth, AccountNotDelegated
+          if ($u.manager) {
+              $m = (Get-ADUser -Identity $u.manager).DistinguishedName
+              if ($a.Manager -ne $m) {
+                  Set-ADUser -Identity $a -Manager $m
+                  $Ansible.Changed = $true
+              }
+          }
+          if ($null -ne $u.asrep -and [bool]$u.asrep -ne $a.DoesNotRequirePreAuth) {
+              Set-ADAccountControl -Identity $a -DoesNotRequirePreAuth ([bool]$u.asrep)
+              "$($u.name): DoesNotRequirePreAuth=$([bool]$u.asrep)"
+              $Ansible.Changed = $true
+          }
+          if ($null -ne $u.sensitive -and [bool]$u.sensitive -ne $a.AccountNotDelegated) {
+              Set-ADAccountControl -Identity $a -AccountNotDelegated ([bool]$u.sensitive)
+              "$($u.name): AccountNotDelegated=$([bool]$u.sensitive)"
+              $Ansible.Changed = $true
+          }
+      }
+  vars:
+    identity_flag_users: >-
+      {%- set out = [] -%}
+      {%- for u in identity_user_list
+            if u.manager is defined or u.asrep is defined or u.sensitive is defined -%}
+      {%- set _ = out.append({'name': u.name, 'manager': u.manager | default(''),
+                              'asrep': u.asrep | default(none),
+                              'sensitive': u.sensitive | default(none)}) -%}
+      {%- endfor -%}
+      {{ out }}
+  when: identity_flag_users | length > 0
+  register: identity_flags
+  until: identity_flags is succeeded
+  retries: "{{ identity_ad_retries }}"
+  delay: "{{ identity_ad_delay }}"
+
+# Opt-in: delete what lab.yml no longer declares. Only objects created by this
+# module (adminDescription=adlab) are touched, never built-ins or LabUsers.
+- name: Prune users, groups and members no longer declared
+  ansible.windows.win_powershell:
+    script: "{{ lookup('ansible.builtin.file', 'prune.ps1') }}"
+    parameters:
+      Users: "{{ identity_user_list | map(attribute='name') | list }}"
+      Groups: "{{ identity_group_list | map('dict2items')
+                  | map('selectattr', 'key', 'in', ['name', 'members']) | map('items2dict') | list }}"
+  when: identity_prune | bool
+  register: identity_pruned
+
+- name: Report what was pruned
+  ansible.builtin.debug:
+    var: identity_pruned.output
+  when: identity_prune | bool and identity_pruned.output | default([]) | length > 0

@@ -17,4 +17,4 @@ vpn_easyrsa_curve: prime256v1
 vpn_ca_cn: lab-ovpn-ca
 
 # Where profiles land: one <client>.ovpn per name in vpn_clients.
-vpn_profile_dir: "{{ playbook_dir }}"
+vpn_profile_dir: "{{ lab_dir }}/vpn"

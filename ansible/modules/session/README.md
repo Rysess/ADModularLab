@@ -26,40 +26,23 @@ no GUI to see it in.
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `session_users` | `[]` | Exactly one entry: `{ user, password?, domain? }` |
+| `session_user` | | Shorthand: the account to log on (`session: {user: alice}`) |
+| `session_users` | `[]` | Long form, exactly one entry: `{ user, password?, domain? }` |
 | `session_wait_retries` / `session_wait_delay` | `18` / `10` | Post-reboot poll for the session + TGT |
 
-`session_users` takes **one** entry — Windows has a single console, so one
-interactive session per host; put further sessions on other hosts. The entry
-needs a `user` (sAMAccountName). `password` defaults to the lab user password
-(correct for the `LabUser*` accounts and any `identity` user without an explicit
-password); `domain` defaults to this host's domain and only needs setting to log
-on a user from another domain across a trust.
+Windows has a single console, so there is one interactive session per host. Put
+further sessions on other hosts. `user` is a sAMAccountName, or `@admin` /
+`@admin2` for the first or second Domain Admin account that `identity`
+generated. `password` defaults to the account's real password: its `identity`
+one, the lab domain admin's, or the LabUser password. `domain` defaults to this
+host's domain, and is only needed to log on a user from another domain across a
+trust.
 
 ```yaml
-- name: ws01
-  role: member
-  domain: lab.local
+ws01:
   modules:
-    - name: session
-      vars:
-        session_users:
-          - user: it.martin        # lab user password by default
-```
-
-To log a Domain Admin on (a juicy dump target on the DC), pass the account and
-its password explicitly:
-
-```yaml
-- name: dc01
-  role: dc
-  domain: lab.local
-  modules:
-    - name: session
-      vars:
-        session_users:
-          - user: john.john
-            password: "{{ domain_admin_pw }}"   # the DA password from Terraform
+    session:
+      user: "@admin"          # a Domain Admin logged on here: dump LSASS
 ```
 
 ## How it works

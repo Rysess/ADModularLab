@@ -1,0 +1,88 @@
+---
+# One simulated user: a scheduled task running as a domain account. Its
+# credentials end up in LSA secrets, which is itself something to find.
+- name: Name the bot account {{ bot.name }}
+  ansible.builtin.set_fact:
+    shares_bot_account: "{{ bot.domain.split('.')[0] | upper }}\\{{ bot.user }}"
+    shares_bot_script: >-
+      {{ shares_bot_dir ~ lab_bs ~ bot.name ~ '.ps1' if bot.kind == 'browse'
+         else lab_bs ~ lab_bs ~ inventory_hostname ~ lab_bs ~ bot.share ~ lab_bs ~ bot.file }}
+
+- name: Create the bot directory
+  ansible.windows.win_file:
+    path: "{{ shares_bot_dir }}"
+    state: directory
+  when: bot.kind == 'browse'
+
+- name: Write the browse script for {{ bot.name }}
+  ansible.windows.win_template:
+    src: bots/browse.ps1.j2
+    dest: "{{ shares_bot_script }}"
+  when: bot.kind == 'browse'
+
+# Batch logon is what a "run whether logged on or not" task uses.
+- name: Let {{ bot.user }} log on as a batch job
+  ansible.windows.win_user_right:
+    name: SeBatchLogonRight
+    users: ["{{ shares_bot_account }}"]
+    action: add
+
+# The task cannot report whether its stored password matches, so a hash of
+# account+password is kept beside it and the password re-sent only on change.
+- name: Read the credential fingerprint of {{ bot.name }}
+  ansible.windows.win_powershell:
+    parameters:
+      Name: "{{ bot.name }}"
+    script: |
+      [CmdletBinding()]
+      param([Parameter(Mandatory)][string]$Name)
+      $Ansible.Changed = $false
+      $task = Get-ScheduledTask -TaskPath '\LabBots\' -TaskName $Name -ErrorAction SilentlyContinue
+      $v = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\adlab\bots' -Name $Name -ErrorAction SilentlyContinue).$Name
+      if ($task -and $v) { $v } else { '' }
+  register: shares_bot_seen
+  changed_when: false
+
+- name: Fingerprint the credential of {{ bot.name }}
+  ansible.builtin.set_fact:
+    shares_bot_fp: "{{ (shares_bot_account ~ ':' ~ shares_secrets[bot.domain ~ '/' ~ bot.user]) | hash('sha256') }}"
+  no_log: true
+
+- name: Register the scheduled task for {{ bot.name }}
+  community.windows.win_scheduled_task:
+    name: "{{ bot.name }}"
+    path: \LabBots
+    description: "{{ 'Housekeeping' if bot.kind == 'script' else 'File server availability check' }}"
+    actions:
+      - path: powershell.exe
+        arguments: >-
+          -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden
+          -File "{{ shares_bot_script }}"
+    triggers:
+      - type: daily
+        start_boundary: "2024-01-01T00:00:00"
+        repetition:
+          interval: "PT{{ bot.every }}M"
+          duration: P1D
+          stop_at_duration_end: false
+    username: "{{ shares_bot_account }}"
+    password: "{{ shares_secrets[bot.domain ~ '/' ~ bot.user] }}"
+    logon_type: password
+    update_password: "{{ shares_bot_seen.output | first | default('') != shares_bot_fp }}"
+    run_level: limited
+    multiple_instances: 2
+    execution_time_limit: PT10M
+    enabled: true
+    state: present
+  no_log: true      # this legacy module does not censor its password argument
+  register: shares_bot_task
+  until: shares_bot_task is succeeded
+  retries: 3
+  delay: 15
+
+- name: Record the credential fingerprint of {{ bot.name }}
+  ansible.windows.win_regedit:
+    path: HKLM:\SOFTWARE\adlab\bots
+    name: "{{ bot.name }}"
+    data: "{{ shares_bot_fp }}"
+    type: string

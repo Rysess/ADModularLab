@@ -1,0 +1,13 @@
+---
+# Apply a list of module roles (lab_module_list) to this host.
+- name: Apply module {{ mod }}
+  ansible.builtin.include_role:
+    name: "{{ mod }}"
+    apply:
+      tags: [modules]
+      become: "{{ ansible_connection | default('') == 'ssh' }}"
+  loop: "{{ lab_module_list }}"
+  loop_control:
+    loop_var: mod
+    label: "{{ mod }}"
+  tags: [modules]

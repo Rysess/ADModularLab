@@ -1,0 +1,8 @@
+# Monitoring bot: opens every path listed in the file below. Managed by Ansible.
+$list = '\\{{ inventory_hostname }}\{{ bot.share }}\{{ bot.file }}'
+foreach ($line in (Get-Content -LiteralPath $list -ErrorAction Stop)) {
+    $t = $line.Trim()
+    if (-not $t -or $t.StartsWith('#')) { continue }
+    if (-not $t.StartsWith('\\')) { $t = "\\$t\IPC$" }
+    try { $null = Get-ChildItem -LiteralPath $t -ErrorAction Stop } catch { }
+}
